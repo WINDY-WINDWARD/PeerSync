@@ -160,8 +160,21 @@ class WifiP2pController(private val context: Context) {
                 ch,
                 { instanceName, registrationType, srcDevice ->
                     Log.d(TAG, "Discovered NSD service: $instanceName from ${srcDevice.deviceName}")
+                    val currentMap = _discoveredSessions.value.toMutableMap()
+                    val existing = currentMap[srcDevice.deviceAddress]
+                    val sessionName = existing?.sessionName ?: if (instanceName.isNotBlank() && instanceName != SERVICE_NAME) instanceName else "PeerSync Intercom"
+                    val session = DiscoveredSession(
+                        sessionName = sessionName,
+                        deviceName = srcDevice.deviceName ?: "PeerSync Device",
+                        deviceAddress = srcDevice.deviceAddress,
+                        token = existing?.token ?: "",
+                        nonce = existing?.nonce ?: ""
+                    )
+                    currentMap[srcDevice.deviceAddress] = session
+                    _discoveredSessions.value = currentMap
                 },
                 { fullDomainName, recordMap, srcDevice ->
+                    Log.d(TAG, "Discovered NSD TXT record from ${srcDevice.deviceName}: $recordMap")
                     val sessionName = recordMap["sessionName"] ?: "PeerSync Session"
                     val token = recordMap["token"] ?: ""
                     val nonce = recordMap["nonce"] ?: ""

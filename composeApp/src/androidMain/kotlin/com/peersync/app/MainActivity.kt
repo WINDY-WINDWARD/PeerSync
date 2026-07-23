@@ -39,7 +39,15 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        requestPermissionLauncher.launch(requiredPermissions.toTypedArray())
+        val allGranted = requiredPermissions.all {
+            checkSelfPermission(it) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+
+        if (allGranted) {
+            engine.startDiscovery()
+        } else {
+            requestPermissionLauncher.launch(requiredPermissions.toTypedArray())
+        }
 
         setContent {
             val connectionState by engine.connectionState.collectAsState()
