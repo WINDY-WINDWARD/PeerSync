@@ -6,7 +6,7 @@ import com.peersync.app.model.ConnectionState
 import com.peersync.app.model.MediaAction
 import com.peersync.app.model.SessionInfo
 import com.peersync.app.navigation.PeerSyncNavGraph
-import com.peersync.app.network.DiscoveredSession
+import com.peersync.app.model.DiscoveredSession
 
 @Composable
 fun App(

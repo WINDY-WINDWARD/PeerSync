@@ -10,6 +10,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import com.peersync.app.engine.PeerSyncEngine
 import com.peersync.app.model.ControlMessage
+import com.peersync.app.model.DiscoveredSession
 
 class MainActivity : ComponentActivity() {
 

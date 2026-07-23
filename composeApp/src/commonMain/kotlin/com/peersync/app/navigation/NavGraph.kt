@@ -2,9 +2,9 @@ package com.peersync.app.navigation
 
 import androidx.compose.runtime.Composable
 import com.peersync.app.model.ConnectionState
+import com.peersync.app.model.DiscoveredSession
 import com.peersync.app.model.MediaAction
 import com.peersync.app.model.SessionInfo
-import com.peersync.app.network.DiscoveredSession
 import com.peersync.app.ui.activesession.ActiveSessionScreen
 import com.peersync.app.ui.sessionlist.SessionListScreen
 

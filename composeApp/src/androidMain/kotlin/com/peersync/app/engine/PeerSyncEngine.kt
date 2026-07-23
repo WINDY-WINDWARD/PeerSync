@@ -60,8 +60,8 @@ class PeerSyncEngine private constructor(private val context: Context) {
                             _connectionState.value = ConnectionState.ConnectedGroupOwner
                             udpDataPlane.startGroupOwner(0)
                         } else {
-                            val goIp = info.groupOwnerAddress?.hostAddress
-                            if (goIp != null && _connectionState.value == ConnectionState.Connecting) {
+                            val goIp = info.groupOwnerAddress?.hostAddress ?: "192.168.49.1"
+                            if (_connectionState.value != ConnectionState.ConnectedClient) {
                                 connectTcpToGroupOwner(goIp)
                             }
                         }
@@ -153,7 +153,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
 
         PeerSyncService.startService(context)
         _connectionState.value = ConnectionState.Connecting
-        wifiP2pController.connectToPeer(session.device)
+        wifiP2pController.connectToPeerAddress(session.deviceAddress)
     }
 
     private fun reElectAsGroupOwner() {

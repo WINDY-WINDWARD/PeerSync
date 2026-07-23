@@ -109,7 +109,7 @@ class MediaHostManager(
             val bufferInfo = MediaCodec.BufferInfo()
             var isEOS = false
 
-            while (isActive && _currentTrackUri.value == uri) {
+            while (currentCoroutineContext().isActive && _currentTrackUri.value == uri) {
                 if (!_isPlaying.value) {
                     delay(100L)
                     continue

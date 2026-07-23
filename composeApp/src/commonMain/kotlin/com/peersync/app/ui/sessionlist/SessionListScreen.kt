@@ -15,7 +15,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.peersync.app.model.ConnectionState
-import com.peersync.app.network.DiscoveredSession
+import com.peersync.app.model.DiscoveredSession
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -107,7 +107,7 @@ fun SessionListScreen(
                             ) {
                                 Column {
                                     Text(session.sessionName, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                                    Text("Host: ${session.device.deviceName}", fontSize = 12.sp, color = Color.Gray)
+                                    Text("Host: ${session.deviceName}", fontSize = 12.sp, color = Color.Gray)
                                 }
                                 Button(onClick = { selectedSession = session }) {
                                     Text("Join")

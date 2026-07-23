@@ -14,17 +14,11 @@ import android.net.wifi.p2p.nsd.WifiP2pDnsSdServiceInfo
 import android.net.wifi.p2p.nsd.WifiP2pDnsSdServiceRequest
 import android.os.Looper
 import android.util.Log
+import com.peersync.app.model.DiscoveredSession
 import com.peersync.app.security.PinManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-
-data class DiscoveredSession(
-    val sessionName: String,
-    val device: WifiP2pDevice,
-    val token: String,
-    val nonce: String
-)
 
 sealed class P2pState {
     object Idle : P2pState()
@@ -71,6 +65,9 @@ class WifiP2pController(private val context: Context) {
                             _p2pState.value = P2pState.Error("Wi-Fi Direct is disabled")
                         }
                     }
+                    WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> {
+                        requestPeersFallback()
+                    }
                     WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
                         val networkInfo = intent.getParcelableExtra<NetworkInfo>(WifiP2pManager.EXTRA_NETWORK_INFO)
                         if (networkInfo?.isConnected == true) {
@@ -86,9 +83,33 @@ class WifiP2pController(private val context: Context) {
         }
         val filter = IntentFilter().apply {
             addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)
+            addAction(WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION)
             addAction(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION)
         }
         context.registerReceiver(receiver, filter)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun requestPeersFallback() {
+        channel?.let { ch ->
+            p2pManager?.requestPeers(ch) { peerList ->
+                val currentMap = _discoveredSessions.value.toMutableMap()
+                peerList.deviceList.forEach { device ->
+                    // Only add if device is a Group Owner or explicitly advertising PeerSync
+                    if (device.isGroupOwner && !currentMap.containsKey(device.deviceAddress)) {
+                        val session = DiscoveredSession(
+                            sessionName = "Session (${device.deviceName})",
+                            deviceName = device.deviceName ?: "PeerSync Host",
+                            deviceAddress = device.deviceAddress,
+                            token = "p2p_fallback",
+                            nonce = ""
+                        )
+                        currentMap[device.deviceAddress] = session
+                    }
+                }
+                _discoveredSessions.value = currentMap
+            }
+        }
     }
 
     fun unregisterReceiver() {
@@ -134,12 +155,13 @@ class WifiP2pController(private val context: Context) {
                 override fun onSuccess() {
                     Log.d(TAG, "Wi-Fi P2P group created successfully")
                     _p2pState.value = P2pState.GroupCreated(sessionName, pin)
+                    p2pManager?.discoverPeers(ch, null) // Activate radio listen mode
                 }
 
                 override fun onFailure(reason: Int) {
-                    // Reason 2 = BUSY (group might already exist)
                     if (reason == WifiP2pManager.BUSY) {
                         _p2pState.value = P2pState.GroupCreated(sessionName, pin)
+                        p2pManager?.discoverPeers(ch, null)
                     } else {
                         _p2pState.value = P2pState.Error("Failed to create group (reason: $reason)")
                     }
@@ -151,25 +173,33 @@ class WifiP2pController(private val context: Context) {
     @SuppressLint("MissingPermission")
     fun startDiscovery() {
         channel?.let { ch ->
+            // First activate P2P peer discovery so radio listens on P2P channels
+            p2pManager?.discoverPeers(ch, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    Log.d(TAG, "P2P peer discovery activated")
+                }
+                override fun onFailure(reason: Int) {
+                    Log.w(TAG, "P2P peer discovery activation returned $reason")
+                }
+            })
+
             p2pManager?.setDnsSdResponseListeners(
                 ch,
                 { instanceName, registrationType, srcDevice ->
-                    // Service response
                     Log.d(TAG, "Discovered NSD service: $instanceName from ${srcDevice.deviceName}")
                 },
                 { fullDomainName, recordMap, srcDevice ->
-                    // TXT record response
                     val sessionName = recordMap["sessionName"] ?: "PeerSync Session"
                     val token = recordMap["token"] ?: ""
                     val nonce = recordMap["nonce"] ?: ""
-                    val session = DiscoveredSession(sessionName, srcDevice, token, nonce)
+                    val session = DiscoveredSession(sessionName, srcDevice.deviceName ?: "Unknown Device", srcDevice.deviceAddress, token, nonce)
                     val currentMap = _discoveredSessions.value.toMutableMap()
                     currentMap[srcDevice.deviceAddress] = session
                     _discoveredSessions.value = currentMap
                 }
             )
 
-            val req = WifiP2pDnsSdServiceRequest.newInstance()
+            val req = WifiP2pDnsSdServiceRequest.newInstance(SERVICE_TYPE)
             serviceRequest = req
             p2pManager?.addServiceRequest(ch, req, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() {
@@ -192,14 +222,14 @@ class WifiP2pController(private val context: Context) {
     }
 
     @SuppressLint("MissingPermission")
-    fun connectToPeer(device: WifiP2pDevice) {
+    fun connectToPeerAddress(deviceAddressStr: String) {
         val config = WifiP2pConfig().apply {
-            deviceAddress = device.deviceAddress
+            deviceAddress = deviceAddressStr
         }
         channel?.let { ch ->
             p2pManager?.connect(ch, config, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() {
-                    Log.d(TAG, "Initiated connection to ${device.deviceName}")
+                    Log.d(TAG, "Initiated connection to $deviceAddressStr")
                 }
 
                 override fun onFailure(reason: Int) {

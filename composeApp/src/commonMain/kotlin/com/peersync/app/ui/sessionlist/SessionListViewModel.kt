@@ -1,7 +1,7 @@
 package com.peersync.app.ui.sessionlist
 
 import com.peersync.app.model.ConnectionState
-import com.peersync.app.network.DiscoveredSession
+import com.peersync.app.model.DiscoveredSession
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
