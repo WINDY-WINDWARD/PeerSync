@@ -35,7 +35,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
     private val _connectionState = MutableStateFlow(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
-    val discoveredSessions: StateFlow<Map<String, DiscoveredSession>> = wifiP2pController.discoveredSessions
+    val discoveredSessions: StateFlow<List<DiscoveredSession>> = wifiP2pController.discoveredSessions
     val sessionInfo: StateFlow<SessionInfo?> = tcpControlPlane.sessionInfo
 
     private var myDeviceName: String = "PeerDevice"

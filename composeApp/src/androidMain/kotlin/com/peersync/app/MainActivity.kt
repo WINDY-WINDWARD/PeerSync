@@ -51,12 +51,12 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val connectionState by engine.connectionState.collectAsState()
-            val sessionsMap by engine.discoveredSessions.collectAsState()
+            val discoveredSessions by engine.discoveredSessions.collectAsState()
             val sessionInfo by engine.sessionInfo.collectAsState()
 
             App(
                 connectionState = connectionState,
-                discoveredSessions = sessionsMap.values.toList(),
+                discoveredSessions = discoveredSessions,
                 sessionInfo = sessionInfo,
                 onCreateSession = { name ->
                     engine.createSession(name, Build.MODEL)
