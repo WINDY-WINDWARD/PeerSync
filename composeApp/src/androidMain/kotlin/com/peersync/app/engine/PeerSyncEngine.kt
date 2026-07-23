@@ -61,17 +61,22 @@ class PeerSyncEngine private constructor(private val context: Context) {
             wifiP2pController.p2pState.collect { p2pState ->
                 when (p2pState) {
                     is P2pState.GroupCreated -> {
-                        Log.d(TAG, "GroupCreated received. Transitioning to ConnectedGroupOwner.")
-                        _connectionState.value = ConnectionState.ConnectedGroupOwner
-                        udpDataPlane.startGroupOwner(0)
-                        audioBridge.start()
+                        if (_connectionState.value != ConnectionState.ConnectedGroupOwner) {
+                            Log.d(TAG, "GroupCreated received. Transitioning to ConnectedGroupOwner.")
+                            _connectionState.value = ConnectionState.ConnectedGroupOwner
+                            udpDataPlane.startGroupOwner(0)
+                            audioBridge.start()
+                        }
                     }
                     is P2pState.Connected -> {
                         val info = p2pState.info
                         if (info.isGroupOwner) {
-                            _connectionState.value = ConnectionState.ConnectedGroupOwner
-                            udpDataPlane.startGroupOwner(0)
-                            audioBridge.start()
+                            if (_connectionState.value != ConnectionState.ConnectedGroupOwner) {
+                                Log.d(TAG, "P2P Connected as GO. Transitioning to ConnectedGroupOwner.")
+                                _connectionState.value = ConnectionState.ConnectedGroupOwner
+                                udpDataPlane.startGroupOwner(0)
+                                audioBridge.start()
+                            }
                         } else {
                             val goIp = info.groupOwnerAddress?.hostAddress ?: "192.168.49.1"
                             if (_connectionState.value != ConnectionState.ConnectedClient) {
