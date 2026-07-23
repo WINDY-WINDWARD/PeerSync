@@ -37,6 +37,7 @@ kotlin {
 android {
     namespace = "com.peersync.app"
     compileSdk = 35
+    ndkVersion = "28.2.13676358"
 
     sourceSets["main"].manifest.srcFile("src/androidMain/AndroidManifest.xml")
     sourceSets["main"].res.srcDirs("src/androidMain/res")
