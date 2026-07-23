@@ -1,23 +1,33 @@
 package com.peersync.app
 
+import android.Manifest
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import android.Manifest
-import android.os.Build
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import com.peersync.app.engine.PeerSyncEngine
+import com.peersync.app.model.ControlMessage
 
 class MainActivity : ComponentActivity() {
+
+    private lateinit var engine: PeerSyncEngine
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        // We will handle permissions logic here later
+        val allGranted = permissions.values.all { it }
+        if (allGranted) {
+            engine.startDiscovery()
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
+        engine = PeerSyncEngine.getInstance(this)
+
         val requiredPermissions = mutableListOf(
             Manifest.permission.RECORD_AUDIO,
             Manifest.permission.ACCESS_FINE_LOCATION
@@ -27,11 +37,36 @@ class MainActivity : ComponentActivity() {
                 add(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
-        
+
         requestPermissionLauncher.launch(requiredPermissions.toTypedArray())
 
         setContent {
-            App()
+            val connectionState by engine.connectionState.collectAsState()
+            val sessionsMap by engine.discoveredSessions.collectAsState()
+            val sessionInfo by engine.sessionInfo.collectAsState()
+
+            App(
+                connectionState = connectionState,
+                discoveredSessions = sessionsMap.values.toList(),
+                sessionInfo = sessionInfo,
+                onCreateSession = { name ->
+                    engine.createSession(name, Build.MODEL)
+                },
+                onJoinSession = { session, pin ->
+                    engine.joinSession(session, pin, Build.MODEL)
+                },
+                onDisconnect = {
+                    engine.disconnect()
+                },
+                onMediaControl = { action ->
+                    val myId = sessionInfo?.members?.find { it.deviceName == Build.MODEL }?.originId ?: 0
+                    engine.tcpControlPlane.broadcastMessage(ControlMessage.MediaControl(action, myId))
+                },
+                onRequestMediaHost = {
+                    val myId = sessionInfo?.members?.find { it.deviceName == Build.MODEL }?.originId ?: 0
+                    engine.tcpControlPlane.broadcastMessage(ControlMessage.MediaTokenRequest(myId))
+                }
+            )
         }
     }
 }

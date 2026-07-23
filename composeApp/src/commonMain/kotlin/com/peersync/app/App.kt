@@ -1,21 +1,34 @@
 package com.peersync.app
 
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
+import androidx.compose.runtime.*
+import com.peersync.app.model.ConnectionState
+import com.peersync.app.model.MediaAction
+import com.peersync.app.model.SessionInfo
+import com.peersync.app.navigation.PeerSyncNavGraph
+import com.peersync.app.network.DiscoveredSession
 
 @Composable
-fun App() {
+fun App(
+    connectionState: ConnectionState = ConnectionState.Disconnected,
+    discoveredSessions: List<DiscoveredSession> = emptyList(),
+    sessionInfo: SessionInfo? = null,
+    onCreateSession: (sessionName: String) -> Unit = {},
+    onJoinSession: (session: DiscoveredSession, pin: String) -> Unit = { _, _ -> },
+    onDisconnect: () -> Unit = {},
+    onMediaControl: (MediaAction) -> Unit = {},
+    onRequestMediaHost: () -> Unit = {}
+) {
     MaterialTheme {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            Text("PeerSync Scaffold Initialized")
-        }
+        PeerSyncNavGraph(
+            connectionState = connectionState,
+            discoveredSessions = discoveredSessions,
+            sessionInfo = sessionInfo,
+            onCreateSession = onCreateSession,
+            onJoinSession = onJoinSession,
+            onDisconnect = onDisconnect,
+            onMediaControl = onMediaControl,
+            onRequestMediaHost = onRequestMediaHost
+        )
     }
 }
