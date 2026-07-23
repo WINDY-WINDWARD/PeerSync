@@ -53,11 +53,15 @@ class MainActivity : ComponentActivity() {
             val connectionState by engine.connectionState.collectAsState()
             val discoveredSessions by engine.discoveredSessions.collectAsState()
             val sessionInfo by engine.sessionInfo.collectAsState()
+            val isMicMuted by engine.isMicMuted.collectAsState()
+            val audioRoute by engine.audioRoute.collectAsState()
 
             App(
                 connectionState = connectionState,
                 discoveredSessions = discoveredSessions,
                 sessionInfo = sessionInfo,
+                isMicMuted = isMicMuted,
+                audioRoute = audioRoute,
                 onCreateSession = { name ->
                     engine.createSession(name, Build.MODEL)
                 },
@@ -74,6 +78,12 @@ class MainActivity : ComponentActivity() {
                 onRequestMediaHost = {
                     val myId = sessionInfo?.members?.find { it.deviceName == Build.MODEL }?.originId ?: 0
                     engine.tcpControlPlane.broadcastMessage(ControlMessage.MediaTokenRequest(myId))
+                },
+                onToggleMicMute = { muted ->
+                    engine.setMicMuted(muted)
+                },
+                onSelectAudioRoute = { route ->
+                    engine.setAudioRoute(route)
                 }
             )
         }

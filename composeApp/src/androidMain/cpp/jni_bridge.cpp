@@ -9,6 +9,30 @@ static AudioEngine* gAudioEngine = nullptr;
 static JavaVM* gJavaVM = nullptr;
 static jobject gAudioBridgeObj = nullptr;
 static jmethodID gOnNativeAudioFrameMethod = nullptr;
+static jmethodID gOnStreamErrorMethod = nullptr;
+
+static void onStreamErrorFromNative(const char* errorMessage) {
+    if (!gJavaVM || !gAudioBridgeObj || !gOnStreamErrorMethod || errorMessage == nullptr) return;
+
+    JNIEnv* env = nullptr;
+    jint res = gJavaVM->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
+    bool shouldDetach = false;
+
+    if (res == JNI_EDETACHED) {
+        if (gJavaVM->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
+        shouldDetach = true;
+    }
+
+    if (env) {
+        jstring jmsg = env->NewStringUTF(errorMessage);
+        env->CallVoidMethod(gAudioBridgeObj, gOnStreamErrorMethod, jmsg);
+        env->DeleteLocalRef(jmsg);
+    }
+
+    if (shouldDetach) {
+        gJavaVM->DetachCurrentThread();
+    }
+}
 
 static void onNativeAudioFrame(uint8_t flag, const uint8_t* encodedData, size_t size) {
     if (!gJavaVM || !gAudioBridgeObj || !gOnNativeAudioFrameMethod) return;
@@ -48,10 +72,12 @@ Java_com_peersync_app_audio_AudioBridge_nativeInit(JNIEnv* env, jobject thiz) {
 
     jclass clazz = env->GetObjectClass(thiz);
     gOnNativeAudioFrameMethod = env->GetMethodID(clazz, "onNativeAudioFrame", "(B[B)V");
+    gOnStreamErrorMethod = env->GetMethodID(clazz, "onStreamError", "(Ljava/lang/String;)V");
 
     if (!gAudioEngine) {
         gAudioEngine = new AudioEngine();
         gAudioEngine->setFrameCallback(onNativeAudioFrame);
+        gAudioEngine->setStreamErrorCallback(onStreamErrorFromNative);
     }
 
     LOGI("AudioBridge JNI initialized successfully");
@@ -103,6 +129,20 @@ JNIEXPORT void JNICALL
 Java_com_peersync_app_audio_AudioBridge_nativeSetMusicDucking(JNIEnv* env, jobject thiz, jboolean enabled) {
     if (gAudioEngine) {
         gAudioEngine->setMusicDucking(enabled == JNI_TRUE);
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_peersync_app_audio_AudioBridge_nativeSetMyOriginId(JNIEnv* env, jobject thiz, jbyte originId) {
+    if (gAudioEngine) {
+        gAudioEngine->setMyOriginId(static_cast<uint8_t>(originId));
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_peersync_app_audio_AudioBridge_nativeSetMicMuted(JNIEnv* env, jobject thiz, jboolean muted) {
+    if (gAudioEngine) {
+        gAudioEngine->setMicMuted(muted == JNI_TRUE);
     }
 }
 

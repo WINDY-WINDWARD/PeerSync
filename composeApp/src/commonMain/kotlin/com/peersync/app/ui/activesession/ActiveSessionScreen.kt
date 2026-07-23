@@ -15,6 +15,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.peersync.app.model.AudioRoute
 import com.peersync.app.model.MediaAction
 import com.peersync.app.model.PeerDevice
 import com.peersync.app.model.SessionInfo
@@ -24,9 +25,13 @@ import com.peersync.app.model.SessionInfo
 fun ActiveSessionScreen(
     sessionInfo: SessionInfo?,
     isGroupOwner: Boolean,
+    isMicMuted: Boolean,
+    audioRoute: AudioRoute,
     onDisconnect: () -> Unit,
     onMediaControl: (MediaAction) -> Unit,
-    onRequestMediaHost: () -> Unit
+    onRequestMediaHost: () -> Unit,
+    onToggleMicMute: (Boolean) -> Unit,
+    onSelectAudioRoute: (AudioRoute) -> Unit
 ) {
     Scaffold(
         topBar = {
@@ -116,6 +121,44 @@ fun ActiveSessionScreen(
             }
 
             Spacer(modifier = Modifier.height(16.dp))
+
+            // Audio Controls Card
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Audio Controls", fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
+                    
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(if (isMicMuted) "Microphone Muted" else "Microphone Active")
+                        Switch(
+                            checked = isMicMuted,
+                            onCheckedChange = { onToggleMicMute(it) }
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Audio Route:", fontSize = 14.sp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        AudioRoute.values().forEach { route ->
+                            FilterChip(
+                                selected = audioRoute == route,
+                                onClick = { onSelectAudioRoute(route) },
+                                label = { Text(route.displayName) }
+                            )
+                        }
+                    }
+                }
+            }
 
             // Shared Media Controls Card
             Card(

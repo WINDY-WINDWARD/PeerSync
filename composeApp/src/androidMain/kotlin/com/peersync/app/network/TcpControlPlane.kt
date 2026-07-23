@@ -58,6 +58,8 @@ class TcpControlPlane {
     private var targetPin: String = ""
     private var sessionName: String = ""
 
+    private var connectionJob: Job? = null
+
     // ------------------------------------------------------------------------
     // GROUP OWNER (SERVER) MODE
     // ------------------------------------------------------------------------
@@ -136,6 +138,17 @@ class TcpControlPlane {
 
                             val handler = ClientHandler(assignedId, newPeer, socket, reader, writer)
                             synchronized(connectedClients) {
+                                // Deduplicate: If this device was already connected (e.g. stale socket
+                                // from brief disconnection), remove the old zombie connection first.
+                                val staleEntries = connectedClients.entries.filter { 
+                                    it.value.peerDevice.deviceAddress == message.deviceAddress || 
+                                    it.value.peerDevice.deviceName == message.deviceName 
+                                }
+                                staleEntries.forEach { 
+                                    it.value.close()
+                                    connectedClients.remove(it.key) 
+                                }
+                                
                                 connectedClients[assignedId] = handler
                             }
 
@@ -193,7 +206,11 @@ class TcpControlPlane {
 
         val updatedInfo = currentInfo.copy(members = membersList)
         _sessionInfo.value = updatedInfo
-        broadcastMessage(ControlMessage.MemberListUpdate(updatedInfo))
+        val memberListMsg = ControlMessage.MemberListUpdate(updatedInfo)
+        broadcastMessage(memberListMsg)
+        // Also emit locally so the GO's PeerSyncEngine.observeControlPlaneMessages()
+        // can populate udpDataPlane.clientIpMap with client IPs for outbound UDP.
+        scope.launch { _incomingMessages.emit(memberListMsg) }
     }
 
     fun broadcastMessage(message: ControlMessage) {
@@ -220,7 +237,8 @@ class TcpControlPlane {
         this.isRunning = true
         this.lastGoHeartbeatMs = System.currentTimeMillis()
 
-        scope.launch {
+        connectionJob?.cancel()
+        connectionJob = scope.launch {
             var socket: Socket? = null
             var lastErr: Exception? = null
 
@@ -378,6 +396,7 @@ class TcpControlPlane {
         serverSocket = null
         clientSocket = null
         _sessionInfo.value = null
+        nextOriginId = 1
     }
 
     // Handler inner class for server client sockets

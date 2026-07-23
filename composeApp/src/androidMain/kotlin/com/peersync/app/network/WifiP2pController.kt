@@ -58,12 +58,23 @@ class WifiP2pController(private val context: Context) {
     private var serviceRequest: WifiP2pDnsSdServiceRequest? = null
     private var localServiceInfo: WifiP2pDnsSdServiceInfo? = null
 
+    // True when we initiated a connection as a client (join). Used to reject
+    // stale group-info callbacks that incorrectly report us as the Group Owner
+    // (leftover group from a previous session) before the real WPS group forms.
+    private var isClientConnection = false
+
     init {
         channel = p2pManager?.initialize(context, Looper.getMainLooper(), null)
     }
 
     fun registerReceiver() {
         if (receiver != null) return
+
+        // Clear any stale P2P group left over from a previous session or app
+        // crash before registering for events and starting discovery.
+        // Use null listener — on Samsung the callback may never fire if no group exists.
+        channel?.let { ch -> p2pManager?.removeGroup(ch, null) }
+
         receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 when (intent.action) {
@@ -120,6 +131,7 @@ class WifiP2pController(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     fun startLocalService(sessionName: String, pin: String, nonce: String) {
+        isClientConnection = false
         val token = PinManager.computeSessionToken(pin, nonce)
         val record = mapOf(
             "sessionName" to sessionName,
@@ -265,36 +277,59 @@ class WifiP2pController(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     fun connectToPeerAddress(deviceAddressStr: String) {
+        isClientConnection = true
         val config = WifiP2pConfig().apply {
             deviceAddress = deviceAddressStr
             wps.setup = WpsInfo.PBC
             groupOwnerIntent = 0
         }
         channel?.let { ch ->
-            p2pManager?.connect(ch, config, object : WifiP2pManager.ActionListener {
-                override fun onSuccess() {
-                    Log.d(TAG, "Initiated connection to $deviceAddressStr (WPS PBC)")
-                    connectionMonitorJob?.cancel()
-                    connectionMonitorJob = CoroutineScope(Dispatchers.Main).launch {
-                        for (i in 1..15) {
-                            delay(1000)
-                            if (_p2pState.value is P2pState.Connected) break
-                            requestConnectionInfo()
-                        }
+            // Fire removeGroup speculatively to clear any stale group. On some
+            // devices (Samsung) the callback may never arrive if there is no group,
+            // so we do NOT gate connect() on it. Instead we just wait a fixed 300 ms
+            // for the framework to settle, then connect regardless.
+            p2pManager?.removeGroup(ch, null)
+            CoroutineScope(Dispatchers.Main).launch {
+                delay(300)
+                initiateConnect(ch, config)
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun initiateConnect(ch: WifiP2pManager.Channel, config: WifiP2pConfig) {
+        p2pManager?.connect(ch, config, object : WifiP2pManager.ActionListener {
+            override fun onSuccess() {
+                Log.d(TAG, "Initiated connection to ${config.deviceAddress} (WPS PBC)")
+                connectionMonitorJob?.cancel()
+                connectionMonitorJob = CoroutineScope(Dispatchers.Main).launch {
+                    for (i in 1..15) {
+                        delay(1000)
+                        if (_p2pState.value is P2pState.Connected) break
+                        requestConnectionInfo()
                     }
                 }
+            }
 
-                override fun onFailure(reason: Int) {
-                    _p2pState.value = P2pState.Error("Failed to connect to peer (reason: $reason)")
-                }
-            })
-        }
+            override fun onFailure(reason: Int) {
+                _p2pState.value = P2pState.Error("Failed to connect to peer (reason: $reason)")
+            }
+        })
     }
 
     fun requestConnectionInfo() {
         channel?.let { ch ->
             p2pManager?.requestConnectionInfo(ch) { info ->
                 if (info != null && info.groupFormed) {
+                    // Reject stale group info: if we initiated as a client but the
+                    // report says we're the Group Owner, it's a leftover group from
+                    // a previous session, not the WPS connection we just requested.
+                    // Ignore it and let the connection monitor keep polling until
+                    // the real (client-role) group info arrives.
+                    if (isClientConnection && info.isGroupOwner) {
+                        Log.w(TAG, "Ignoring stale group info: initiated as client but reported as GO")
+                        return@requestConnectionInfo
+                    }
                     Log.d(TAG, "Connection info: GO=${info.isGroupOwner}, GO_IP=${info.groupOwnerAddress?.hostAddress}")
                     _p2pState.value = P2pState.Connected(info)
                 } else {
