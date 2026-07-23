@@ -10,6 +10,8 @@ import com.peersync.app.service.PeerSyncService
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
+import com.peersync.app.audio.AudioBridge
+
 class PeerSyncEngine private constructor(private val context: Context) {
 
     companion object {
@@ -31,6 +33,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
     val wifiP2pController = WifiP2pController(context)
     val tcpControlPlane = TcpControlPlane()
     val udpDataPlane = UdpDataPlane()
+    val audioBridge = AudioBridge(context)
 
     private val _connectionState = MutableStateFlow(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
@@ -41,12 +44,16 @@ class PeerSyncEngine private constructor(private val context: Context) {
     private var myDeviceName: String = "PeerDevice"
     private var myP2pAddress: String = "02:00:00:00:00:00"
     private var currentPin: String = ""
+    private var audioSeqNum: Short = 0
 
     init {
         wifiP2pController.registerReceiver()
+        audioBridge.initialize()
         observeP2pState()
         observeControlPlaneMessages()
         observeGoLossEvents()
+        observeAudioBridgeOutgoingFrames()
+        observeUdpIncomingAudioPackets()
     }
 
     private fun observeP2pState() {
@@ -57,12 +64,14 @@ class PeerSyncEngine private constructor(private val context: Context) {
                         Log.d(TAG, "GroupCreated received. Transitioning to ConnectedGroupOwner.")
                         _connectionState.value = ConnectionState.ConnectedGroupOwner
                         udpDataPlane.startGroupOwner(0)
+                        audioBridge.start()
                     }
                     is P2pState.Connected -> {
                         val info = p2pState.info
                         if (info.isGroupOwner) {
                             _connectionState.value = ConnectionState.ConnectedGroupOwner
                             udpDataPlane.startGroupOwner(0)
+                            audioBridge.start()
                         } else {
                             val goIp = info.groupOwnerAddress?.hostAddress ?: "192.168.49.1"
                             if (_connectionState.value != ConnectionState.ConnectedClient) {
@@ -89,6 +98,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
             if (success) {
                 val assignedId = tcpControlPlane.sessionInfo.value?.members?.find { it.deviceName == myDeviceName }?.originId ?: 1
                 udpDataPlane.startClient(assignedId, goIp)
+                audioBridge.start()
                 _connectionState.value = ConnectionState.ConnectedClient
             } else {
                 Log.e(TAG, "Failed TCP join: $error")
@@ -133,6 +143,32 @@ class PeerSyncEngine private constructor(private val context: Context) {
         }
     }
 
+    private fun observeAudioBridgeOutgoingFrames() {
+        scope.launch {
+            audioBridge.outgoingFrames.collect { frame ->
+                val myId = tcpControlPlane.sessionInfo.value?.members?.find { it.deviceName == myDeviceName }?.originId ?: 0
+                val header = AudioPacketHeader(
+                    originId = myId,
+                    payloadFlag = frame.flag,
+                    sequenceIndex = (audioSeqNum++).toUShort()
+                )
+                udpDataPlane.sendAudioPacket(header, frame.payload)
+            }
+        }
+    }
+
+    private fun observeUdpIncomingAudioPackets() {
+        scope.launch {
+            udpDataPlane.incomingPackets.collect { packet ->
+                audioBridge.feedReceivedPacket(
+                    originId = packet.header.originId,
+                    flag = packet.header.payloadFlag,
+                    payload = packet.payload
+                )
+            }
+        }
+    }
+
     fun startDiscovery() {
         _connectionState.value = ConnectionState.Discovering
         wifiP2pController.startDiscovery()
@@ -170,6 +206,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
         wifiP2pController.disconnect()
         tcpControlPlane.stop()
         udpDataPlane.stop()
+        audioBridge.stop()
 
         _connectionState.value = ConnectionState.Connecting
         wifiP2pController.startLocalService(sessionName, pin, nonce)
@@ -181,6 +218,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
     }
 
     fun disconnect() {
+        audioBridge.stop()
         tcpControlPlane.stop()
         udpDataPlane.stop()
         wifiP2pController.disconnect()

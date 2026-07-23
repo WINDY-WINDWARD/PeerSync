@@ -263,6 +263,20 @@ class TcpControlPlane {
                 val response = json.decodeFromString<ControlMessage>(responseLine) as? ControlMessage.JoinResponse
                 if (response?.success == true) {
                     myOriginId = response.assignedOriginId ?: 1
+                    val clientPeer = PeerDevice(
+                        originId = myOriginId,
+                        deviceAddress = p2pAddress,
+                        deviceName = deviceName,
+                        ipAddress = "127.0.0.1",
+                        isGroupOwner = false
+                    )
+                    _sessionInfo.value = SessionInfo(
+                        sessionName = response.sessionName ?: "PeerSync Intercom",
+                        groupOwnerId = 0,
+                        pin = pin,
+                        saltNonce = "",
+                        members = listOf(clientPeer)
+                    )
                     onResult(true, null)
 
                     startClientHeartbeatMonitor()

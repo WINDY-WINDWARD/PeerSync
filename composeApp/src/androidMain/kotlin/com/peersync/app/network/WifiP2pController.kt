@@ -77,14 +77,7 @@ class WifiP2pController(private val context: Context) {
                         requestPeersCheck()
                     }
                     WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
-                        val networkInfo = intent.getParcelableExtra<NetworkInfo>(WifiP2pManager.EXTRA_NETWORK_INFO)
-                        if (networkInfo?.isConnected == true) {
-                            requestConnectionInfo()
-                        } else {
-                            if (_p2pState.value is P2pState.Connected) {
-                                _p2pState.value = P2pState.Idle
-                            }
-                        }
+                        requestConnectionInfo()
                     }
                 }
             }
@@ -173,6 +166,7 @@ class WifiP2pController(private val context: Context) {
     }
 
     private var discoveryJob: Job? = null
+    private var connectionMonitorJob: Job? = null
 
     private fun updateDiscoveredSession(session: DiscoveredSession) {
         val updated = session.copy(lastSeenMs = System.currentTimeMillis())
@@ -279,6 +273,14 @@ class WifiP2pController(private val context: Context) {
             p2pManager?.connect(ch, config, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() {
                     Log.d(TAG, "Initiated connection to $deviceAddressStr (WPS PBC)")
+                    connectionMonitorJob?.cancel()
+                    connectionMonitorJob = CoroutineScope(Dispatchers.Main).launch {
+                        for (i in 1..15) {
+                            delay(1000)
+                            if (_p2pState.value is P2pState.Connected) break
+                            requestConnectionInfo()
+                        }
+                    }
                 }
 
                 override fun onFailure(reason: Int) {
@@ -294,12 +296,18 @@ class WifiP2pController(private val context: Context) {
                 if (info != null && info.groupFormed) {
                     Log.d(TAG, "Connection info: GO=${info.isGroupOwner}, GO_IP=${info.groupOwnerAddress?.hostAddress}")
                     _p2pState.value = P2pState.Connected(info)
+                } else {
+                    if (_p2pState.value is P2pState.Connected) {
+                        _p2pState.value = P2pState.Idle
+                    }
                 }
             }
         }
     }
 
     fun disconnect() {
+        connectionMonitorJob?.cancel()
+        connectionMonitorJob = null
         sessionsMap.clear()
         _discoveredSessions.value = emptyList()
         channel?.let { ch ->
