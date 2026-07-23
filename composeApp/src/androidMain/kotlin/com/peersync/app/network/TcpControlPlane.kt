@@ -127,7 +127,7 @@ class TcpControlPlane {
                                 isGroupOwner = false
                             )
 
-                            val response = ControlMessage.JoinResponse(
+                            val response: ControlMessage = ControlMessage.JoinResponse(
                                 success = true,
                                 assignedOriginId = assignedId,
                                 sessionName = sessionName
@@ -143,7 +143,7 @@ class TcpControlPlane {
                             handler.startListening()
                         }
                         is PinValidationResult.InvalidPin -> {
-                            val response = ControlMessage.JoinResponse(
+                            val response: ControlMessage = ControlMessage.JoinResponse(
                                 success = false,
                                 errorMessage = "Invalid PIN. ${validation.attemptsRemaining} attempts remaining."
                             )
@@ -152,7 +152,7 @@ class TcpControlPlane {
                         }
                         is PinValidationResult.RateLimited -> {
                             val secs = (validation.cooldownRemainingMs / 1000) + 1
-                            val response = ControlMessage.JoinResponse(
+                            val response: ControlMessage = ControlMessage.JoinResponse(
                                 success = false,
                                 errorMessage = "Too many failed attempts. Try again in ${secs}s."
                             )
