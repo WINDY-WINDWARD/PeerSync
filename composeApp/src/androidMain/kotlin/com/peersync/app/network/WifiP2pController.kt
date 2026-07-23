@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.net.NetworkInfo
+import android.net.wifi.WpsInfo
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pDevice
 import android.net.wifi.p2p.WifiP2pInfo
@@ -101,17 +102,12 @@ class WifiP2pController(private val context: Context) {
         channel?.let { ch ->
             p2pManager?.requestPeers(ch) { peerList ->
                 peerList.deviceList.forEach { device ->
-                    if (device.isGroupOwner || device.status == WifiP2pDevice.CONNECTED || device.status == WifiP2pDevice.AVAILABLE) {
-                        val existing = sessionsMap[device.deviceAddress]
-                        val name = existing?.sessionName ?: "PeerSync (${device.deviceName})"
-                        val session = DiscoveredSession(
-                            sessionName = name,
-                            deviceName = device.deviceName ?: "PeerSync Device",
-                            deviceAddress = device.deviceAddress,
-                            token = existing?.token ?: "",
-                            nonce = existing?.nonce ?: ""
+                    val existing = sessionsMap[device.deviceAddress]
+                    if (existing != null) {
+                        val updated = existing.copy(
+                            deviceName = device.deviceName ?: existing.deviceName
                         )
-                        updateDiscoveredSession(session)
+                        sessionsMap[device.deviceAddress] = updated
                     }
                 }
             }
@@ -160,14 +156,14 @@ class WifiP2pController(private val context: Context) {
             p2pManager?.createGroup(ch, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() {
                     Log.d(TAG, "Wi-Fi P2P group created successfully")
+                    stopDiscovery()
                     _p2pState.value = P2pState.GroupCreated(sessionName, pin)
-                    p2pManager?.discoverPeers(ch, null)
                 }
 
                 override fun onFailure(reason: Int) {
                     if (reason == WifiP2pManager.BUSY) {
+                        stopDiscovery()
                         _p2pState.value = P2pState.GroupCreated(sessionName, pin)
-                        p2pManager?.discoverPeers(ch, null)
                     } else {
                         _p2pState.value = P2pState.Error("Failed to create group (reason: $reason)")
                     }
@@ -179,9 +175,20 @@ class WifiP2pController(private val context: Context) {
     private var discoveryJob: Job? = null
 
     private fun updateDiscoveredSession(session: DiscoveredSession) {
-        sessionsMap[session.deviceAddress] = session
+        val updated = session.copy(lastSeenMs = System.currentTimeMillis())
+        sessionsMap[session.deviceAddress] = updated
         _discoveredSessions.value = sessionsMap.values.toList()
         Log.d(TAG, "Updated discoveredSessions list (count=${sessionsMap.size}): ${sessionsMap.values.map { it.sessionName }}")
+    }
+
+    private fun purgeStaleSessions() {
+        val now = System.currentTimeMillis()
+        val staleKeys = sessionsMap.filter { now - it.value.lastSeenMs > 10000L }.keys
+        if (staleKeys.isNotEmpty()) {
+            staleKeys.forEach { sessionsMap.remove(it) }
+            _discoveredSessions.value = sessionsMap.values.toList()
+            Log.d(TAG, "Purged ${staleKeys.size} stale session(s). Remaining: ${sessionsMap.size}")
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -241,6 +248,7 @@ class WifiP2pController(private val context: Context) {
                             p2pManager?.discoverPeers(ch, null)
                             p2pManager?.discoverServices(ch, null)
                             requestPeersCheck()
+                            purgeStaleSessions()
                         }
                     }
                 }
@@ -265,11 +273,12 @@ class WifiP2pController(private val context: Context) {
     fun connectToPeerAddress(deviceAddressStr: String) {
         val config = WifiP2pConfig().apply {
             deviceAddress = deviceAddressStr
+            wps.setup = WpsInfo.PBC
         }
         channel?.let { ch ->
             p2pManager?.connect(ch, config, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() {
-                    Log.d(TAG, "Initiated connection to $deviceAddressStr")
+                    Log.d(TAG, "Initiated connection to $deviceAddressStr (WPS PBC)")
                 }
 
                 override fun onFailure(reason: Int) {
@@ -290,9 +299,9 @@ class WifiP2pController(private val context: Context) {
         }
     }
 
-
-
     fun disconnect() {
+        sessionsMap.clear()
+        _discoveredSessions.value = emptyList()
         channel?.let { ch ->
             localServiceInfo?.let { info ->
                 p2pManager?.removeLocalService(ch, info, null)

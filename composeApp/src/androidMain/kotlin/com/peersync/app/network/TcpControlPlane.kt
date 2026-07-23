@@ -221,10 +221,32 @@ class TcpControlPlane {
         this.lastGoHeartbeatMs = System.currentTimeMillis()
 
         scope.launch {
-            try {
-                val socket = Socket(goIp, TCP_PORT)
-                clientSocket = socket
+            var socket: Socket? = null
+            var lastErr: Exception? = null
 
+            for (attempt in 1..6) {
+                try {
+                    Log.d(TAG, "Attempting TCP connection to GO $goIp:$TCP_PORT (attempt $attempt/6)")
+                    socket = Socket()
+                    socket.connect(java.net.InetSocketAddress(goIp, TCP_PORT), 3000)
+                    break
+                } catch (e: Exception) {
+                    lastErr = e
+                    Log.w(TAG, "Attempt $attempt connecting to GO failed: ${e.message}")
+                    try { socket?.close() } catch (_: Exception) {}
+                    socket = null
+                    delay(500)
+                }
+            }
+
+            if (socket == null) {
+                Log.e(TAG, "Failed all attempts to connect to GO at $goIp", lastErr)
+                onResult(false, lastErr?.localizedMessage ?: "Network error connecting to GO")
+                return@launch
+            }
+
+            clientSocket = socket
+            try {
                 val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
                 val writer = PrintWriter(socket.getOutputStream(), true)
 

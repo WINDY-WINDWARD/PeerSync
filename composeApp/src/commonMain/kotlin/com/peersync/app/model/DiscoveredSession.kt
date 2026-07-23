@@ -8,5 +8,6 @@ data class DiscoveredSession(
     val deviceName: String,
     val deviceAddress: String,
     val token: String,
-    val nonce: String
+    val nonce: String,
+    val lastSeenMs: Long = System.currentTimeMillis()
 )
