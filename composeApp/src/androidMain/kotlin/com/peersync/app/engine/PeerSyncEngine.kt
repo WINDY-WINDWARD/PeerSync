@@ -224,5 +224,6 @@ class PeerSyncEngine private constructor(private val context: Context) {
         wifiP2pController.disconnect()
         PeerSyncService.stopService(context)
         _connectionState.value = ConnectionState.Disconnected
+        startDiscovery()
     }
 }

@@ -268,6 +268,7 @@ class WifiP2pController(private val context: Context) {
         val config = WifiP2pConfig().apply {
             deviceAddress = deviceAddressStr
             wps.setup = WpsInfo.PBC
+            groupOwnerIntent = 0
         }
         channel?.let { ch ->
             p2pManager?.connect(ch, config, object : WifiP2pManager.ActionListener {
