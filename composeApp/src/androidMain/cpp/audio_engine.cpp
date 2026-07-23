@@ -34,8 +34,9 @@ bool AudioEngine::start() {
 
     // Input Stream (Microphone - 16kHz Mono VOICE_COMMUNICATION)
     AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_INPUT);
-    AAudioStreamBuilder_setSharingMode(builder, AAUDIO_SHARING_MODE_EXCLUSIVE);
+    AAudioStreamBuilder_setSharingMode(builder, AAUDIO_SHARING_MODE_SHARED);
     AAudioStreamBuilder_setPerformanceMode(builder, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+    AAudioStreamBuilder_setInputPreset(builder, AAUDIO_INPUT_PRESET_VOICE_COMMUNICATION);
     AAudioStreamBuilder_setSampleRate(builder, 16000);
     AAudioStreamBuilder_setChannelCount(builder, 1);
     AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_I16);
@@ -49,6 +50,9 @@ bool AudioEngine::start() {
 
     // Output Stream (Speaker - 16kHz Mono VOICE_COMMUNICATION)
     AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_OUTPUT);
+    AAudioStreamBuilder_setSharingMode(builder, AAUDIO_SHARING_MODE_SHARED);
+    AAudioStreamBuilder_setUsage(builder, AAUDIO_USAGE_VOICE_COMMUNICATION);
+    AAudioStreamBuilder_setContentType(builder, AAUDIO_CONTENT_TYPE_SPEECH);
     AAudioStreamBuilder_setDataCallback(builder, outCallback, this);
 
     if (AAudioStreamBuilder_openStream(builder, &outputStream_) != AAUDIO_OK) {
@@ -89,9 +93,8 @@ void AudioEngine::stop() {
 aaudio_data_callback_result_t AudioEngine::onAudioInput(const int16_t* audioData, int32_t numFrames) {
     if (!isRunning_.load()) return AAUDIO_CALLBACK_RESULT_STOP;
 
-    // Process VAD
-    bool speech = vad_.isSpeech(audioData, numFrames, 16000);
-    uint8_t flag = speech ? 0x01 : 0x00; // 0x01 = Voice, 0x00 = Keep-Alive
+    // Process Voice Frame (flag 0x01 = Voice)
+    uint8_t flag = 0x01;
 
     uint8_t encodedBuffer[512];
     int encodedBytes = voiceCodec_.encode(audioData, numFrames, encodedBuffer, sizeof(encodedBuffer));

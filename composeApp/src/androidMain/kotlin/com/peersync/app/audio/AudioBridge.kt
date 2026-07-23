@@ -77,13 +77,14 @@ class AudioBridge(private val context: Context) {
 
     private fun requestCommunicationFocus() {
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+        try { audioManager.isSpeakerphoneOn = true } catch (_: Exception) {}
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val attr = AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build()
 
-            val focusReq = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            val focusReq = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
                 .setAudioAttributes(attr)
                 .setAcceptsDelayedFocusGain(true)
                 .setOnAudioFocusChangeListener { focusChange ->
@@ -104,12 +105,13 @@ class AudioBridge(private val context: Context) {
             audioManager.requestAudioFocus(
                 null,
                 AudioManager.STREAM_VOICE_CALL,
-                AudioManager.AUDIOFOCUS_GAIN
+                AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
             )
         }
     }
 
     private fun abandonCommunicationFocus() {
+        try { audioManager.isSpeakerphoneOn = false } catch (_: Exception) {}
         audioManager.mode = AudioManager.MODE_NORMAL
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
