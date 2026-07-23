@@ -1151,7 +1151,7 @@ target_link_libraries(peersync_audio
 | :--- | :--- |
 | `RECORD_AUDIO` denied | Show error: "Microphone access required for intercom." Offer Settings link. Disable join/create. |
 | `NEARBY_WIFI_DEVICES` denied | Show error: "Wi-Fi access required to find nearby devices." Offer Settings link. Disable discovery. |
-| `POST_NOTIFICATIONS` denied | Foreground service may not show notification. Still functional on API 33+ but warn user. |
+| `POST_NOTIFICATIONS` denied | Foreground service may not show notification on API 33+. Still functional, but warn user. (No action needed on API 30-32). |
 
 ### 10.4 Edge Cases
 
