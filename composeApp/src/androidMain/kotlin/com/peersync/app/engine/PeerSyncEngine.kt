@@ -53,10 +53,14 @@ class PeerSyncEngine private constructor(private val context: Context) {
         scope.launch {
             wifiP2pController.p2pState.collect { p2pState ->
                 when (p2pState) {
+                    is P2pState.GroupCreated -> {
+                        Log.d(TAG, "GroupCreated received. Transitioning to ConnectedGroupOwner.")
+                        _connectionState.value = ConnectionState.ConnectedGroupOwner
+                        udpDataPlane.startGroupOwner(0)
+                    }
                     is P2pState.Connected -> {
                         val info = p2pState.info
                         if (info.isGroupOwner) {
-                            val goIp = info.groupOwnerAddress?.hostAddress ?: "192.168.49.1"
                             _connectionState.value = ConnectionState.ConnectedGroupOwner
                             udpDataPlane.startGroupOwner(0)
                         } else {
@@ -139,6 +143,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
         val pin = PinManager.generatePin()
         val nonce = PinManager.generateNonce()
         this.currentPin = pin
+        Log.i(TAG, "Created session '$sessionName' with PIN: $pin")
 
         PeerSyncService.startService(context)
         _connectionState.value = ConnectionState.Connecting

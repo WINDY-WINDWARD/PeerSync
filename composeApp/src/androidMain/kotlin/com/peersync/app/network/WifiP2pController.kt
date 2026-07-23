@@ -65,9 +65,6 @@ class WifiP2pController(private val context: Context) {
                             _p2pState.value = P2pState.Error("Wi-Fi Direct is disabled")
                         }
                     }
-                    WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> {
-                        requestPeersFallback()
-                    }
                     WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
                         val networkInfo = intent.getParcelableExtra<NetworkInfo>(WifiP2pManager.EXTRA_NETWORK_INFO)
                         if (networkInfo?.isConnected == true) {
@@ -83,33 +80,9 @@ class WifiP2pController(private val context: Context) {
         }
         val filter = IntentFilter().apply {
             addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)
-            addAction(WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION)
             addAction(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION)
         }
         context.registerReceiver(receiver, filter)
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun requestPeersFallback() {
-        channel?.let { ch ->
-            p2pManager?.requestPeers(ch) { peerList ->
-                val currentMap = _discoveredSessions.value.toMutableMap()
-                peerList.deviceList.forEach { device ->
-                    // Only add if device is a Group Owner or explicitly advertising PeerSync
-                    if (device.isGroupOwner && !currentMap.containsKey(device.deviceAddress)) {
-                        val session = DiscoveredSession(
-                            sessionName = "Session (${device.deviceName})",
-                            deviceName = device.deviceName ?: "PeerSync Host",
-                            deviceAddress = device.deviceAddress,
-                            token = "p2p_fallback",
-                            nonce = ""
-                        )
-                        currentMap[device.deviceAddress] = session
-                    }
-                }
-                _discoveredSessions.value = currentMap
-            }
-        }
     }
 
     fun unregisterReceiver() {
