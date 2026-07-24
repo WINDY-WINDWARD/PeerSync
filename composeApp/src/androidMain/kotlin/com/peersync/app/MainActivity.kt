@@ -100,9 +100,6 @@ class MainActivity : ComponentActivity() {
                 onMediaControl = { action ->
                     engine.handleMediaAction(action)
                 },
-                onRequestMediaHost = {
-                    engine.requestMediaHost()
-                },
                 onSelectMusicRequest = {
                     musicFolderPickerLauncher.launch(null)
                 },
@@ -114,6 +111,9 @@ class MainActivity : ComponentActivity() {
                 },
                 onSetPeerVolume = { originId, volume ->
                     engine.setPeerVolume(originId, volume)
+                },
+                onSetLocalMusicVolume = { volume ->
+                    engine.setLocalMusicVolume(volume)
                 },
                 onVolumeStep = {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

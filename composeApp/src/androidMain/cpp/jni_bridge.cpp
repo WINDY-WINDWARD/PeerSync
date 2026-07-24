@@ -85,9 +85,9 @@ Java_com_peersync_app_audio_AudioBridge_nativeInit(JNIEnv* env, jobject thiz) {
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_peersync_app_audio_AudioBridge_nativeStartAudio(JNIEnv* env, jobject thiz) {
+Java_com_peersync_app_audio_AudioBridge_nativeStartAudio(JNIEnv* env, jobject thiz, jint sessionId) {
     if (gAudioEngine) {
-        return gAudioEngine->start() ? JNI_TRUE : JNI_FALSE;
+        return gAudioEngine->start(sessionId) ? JNI_TRUE : JNI_FALSE;
     }
     return JNI_FALSE;
 }
@@ -96,6 +96,26 @@ JNIEXPORT void JNICALL
 Java_com_peersync_app_audio_AudioBridge_nativeStopAudio(JNIEnv* env, jobject thiz) {
     if (gAudioEngine) {
         gAudioEngine->stop();
+    }
+}
+
+JNIEXPORT jint JNICALL
+Java_com_peersync_app_audio_AudioBridge_nativeGetLocalMusicFreeSpace(JNIEnv* env, jobject thiz) {
+    if (gAudioEngine) {
+        return static_cast<jint>(gAudioEngine->getLocalMusicFreeSpace());
+    }
+    return 0;
+}
+
+JNIEXPORT void JNICALL
+Java_com_peersync_app_audio_AudioBridge_nativeFeedLocalMusic(JNIEnv* env, jobject thiz, jbyteArray pcmData) {
+    if (gAudioEngine && pcmData) {
+        jsize len = env->GetArrayLength(pcmData);
+        if (len > 0) {
+            jbyte* elements = env->GetByteArrayElements(pcmData, nullptr);
+            gAudioEngine->feedLocalMusic(reinterpret_cast<const int16_t*>(elements), static_cast<size_t>(len / 2));
+            env->ReleaseByteArrayElements(pcmData, elements, JNI_ABORT);
+        }
     }
 }
 
@@ -143,6 +163,13 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_peersync_app_audio_AudioBridge_nativeSetMicMuted(JNIEnv* env, jobject thiz, jboolean muted) {
     if (gAudioEngine) {
         gAudioEngine->setMicMuted(muted == JNI_TRUE);
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_peersync_app_audio_AudioBridge_nativeSetLocalMusicGain(JNIEnv* env, jobject thiz, jfloat gain) {
+    if (gAudioEngine) {
+        gAudioEngine->setLocalMusicGain(static_cast<float>(gain));
     }
 }
 

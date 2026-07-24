@@ -16,7 +16,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 class MediaHostManager(
     private val context: Context,
-    private val onSendMusicPacket: (AudioPacketHeader, ByteArray) -> Unit
+    private val onFeedLocalMusic: suspend (ByteArray) -> Unit
 ) {
 
     companion object {
@@ -199,6 +199,8 @@ class MediaHostManager(
 
             var trackIndex = -1
             var format: MediaFormat? = null
+            var sampleRate = 44100
+            var channelCount = 2
 
             for (i in 0 until extractor.trackCount) {
                 val f = extractor.getTrackFormat(i)
@@ -260,34 +262,42 @@ class MediaHostManager(
 
                     decoder.releaseOutputBuffer(outputBufIdx, false)
 
-                    // Track when we started processing this codec buffer so we can
-                    // pace the sender at exactly real-time without drifting behind.
-                    val frameStartMs = System.currentTimeMillis()
-
                     if (chunk.isNotEmpty()) {
-                        // Slice decoded PCM into MTU-safe UDP payloads (<=MAX_UDP_PAYLOAD bytes).
-                        // All slices from one codec buffer are sent back-to-back with no delay
-                        // between them — they belong to the same 20ms audio frame and must arrive
-                        // together. The real-time pacing delay comes AFTER all slices are sent.
-                        var offset = 0
-                        while (offset < chunk.size) {
-                            val end = minOf(offset + MAX_UDP_PAYLOAD, chunk.size)
-                            val slice = chunk.copyOfRange(offset, end)
-                            val header = AudioPacketHeader(myOriginId, AudioPacketHeader.FLAG_MUSIC, musicSeqIndex++)
-                            onSendMusicPacket(header, slice)
-                            offset = end
+                        // Downmix to 16kHz mono and feed to C++ ring buffer
+                        val numSamples = chunk.size / 2 // total int16 samples
+                        val stereoSamples = ShortArray(numSamples)
+                        java.nio.ByteBuffer.wrap(chunk).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(stereoSamples)
+                        
+                        val monoSamples = ShortArray(numSamples / channelCount)
+                        if (channelCount > 1) {
+                            for (i in monoSamples.indices) {
+                                val s0 = stereoSamples[i * channelCount].toInt()
+                                val s1 = stereoSamples[i * channelCount + 1].toInt()
+                                monoSamples[i] = ((s0 + s1) / 2).toShort()
+                            }
+                        } else {
+                            System.arraycopy(stereoSamples, 0, monoSamples, 0, monoSamples.size)
                         }
-                    }
 
-                    // Real-time pacing: sleep for however much of the 20ms budget remains
-                    // after encoding + sending. This keeps the sender locked to exactly 20ms
-                    // per frame regardless of processing overhead, preventing the ring buffer
-                    // from draining faster than it fills (which causes the rhythmic pauses).
-                    val elapsed = System.currentTimeMillis() - frameStartMs
-                    val remaining = 20L - elapsed
-                    if (remaining > 0) delay(remaining)
+                        val resampledFrames = (monoSamples.size * 16000L) / sampleRate
+                        val resampledSamples = ShortArray(resampledFrames.toInt())
+                        val ratio = sampleRate.toDouble() / 16000.0
+                        for (i in resampledSamples.indices) {
+                            val srcIndex = (i * ratio).toInt().coerceAtMost(monoSamples.size - 1)
+                            resampledSamples[i] = monoSamples[srcIndex]
+                        }
+
+                        val outBytes = ByteArray(resampledSamples.size * 2)
+                        java.nio.ByteBuffer.wrap(outBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(resampledSamples)
+                        
+                        // Push to audioBridge and suspend if full
+                        onFeedLocalMusic(outBytes)
+                    }
                 } else if (outputBufIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    Log.d(TAG, "Decoder output format changed: ${decoder.outputFormat}")
+                    val outFormat = decoder.outputFormat
+                    sampleRate = outFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                    channelCount = outFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                    Log.d(TAG, "Decoder output format changed: $outFormat (sampleRate=$sampleRate, channels=$channelCount)")
                 }
 
                 if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {

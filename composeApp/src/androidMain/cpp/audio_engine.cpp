@@ -22,13 +22,6 @@ static aaudio_data_callback_result_t outCallback(
     return engine->onAudioOutput(static_cast<int16_t*>(audioData), numFrames);
 }
 
-static aaudio_data_callback_result_t musicOutCallback(
-    AAudioStream* stream, void* userData, void* audioData, int32_t numFrames
-) {
-    auto* engine = static_cast<AudioEngine*>(userData);
-    return engine->onMusicOutput(static_cast<int16_t*>(audioData), numFrames);
-}
-
 static void errorCallback(AAudioStream* stream, void* userData, aaudio_result_t error) {
     AudioEngine::OnStreamError(stream, userData, error);
 }
@@ -39,7 +32,6 @@ void AudioEngine::OnStreamError(AAudioStream* stream, void* userData, aaudio_res
     if (engine != nullptr) {
         if (stream == engine->inputStream_) direction = "INPUT";
         else if (stream == engine->outputStream_) direction = "OUTPUT";
-        else if (stream == engine->musicOutputStream_) direction = "MUSIC_OUTPUT";
     }
     LOGE("AAudio stream %s error/disconnected: %s (%d)", direction, AAudio_convertResultToText(error), error);
     if (engine != nullptr) {
@@ -59,8 +51,10 @@ AudioEngine::AudioEngine() {
         clientBuffering_[i]   = true; // wait for initial 60ms cushion before draining
         clientStarveCount_[i] = 0;
     }
-    inputMonoScratch_.reserve(VOICE_FRAME_SAMPLES * 2);
-    outputMonoScratch_.reserve(VOICE_FRAME_SAMPLES * 2);
+    inputMonoScratch_.reserve(VOICE_FRAME_SAMPLES * 4);
+    outputMonoScratch_.reserve(VOICE_FRAME_SAMPLES * 4);
+    localMusicInScratch_.reserve(VOICE_FRAME_SAMPLES * 4);
+    localMusicOutScratch_.reserve(VOICE_FRAME_SAMPLES * 4);
     captureAccumulator_.reserve(VOICE_FRAME_SAMPLES * 8);
 }
 
@@ -76,12 +70,12 @@ AudioEngine::~AudioEngine() {
     }
 }
 
-bool AudioEngine::start() {
+bool AudioEngine::start(int sessionId) {
     if (isRunning_.load()) return true;
 
     // Ensure stale state from previous runs is cleared.
-    musicRingBuffer_.clear();
-    musicBuffering_.store(true, std::memory_order_relaxed);
+    localMusicInRingBuffer_.clear();
+    localMusicOutRingBuffer_.clear();
     captureAccumulator_.clear();
 
     AAudioStreamBuilder* builder = nullptr;
@@ -96,6 +90,7 @@ bool AudioEngine::start() {
     AAudioStreamBuilder_setSampleRate(builder, 16000);
     AAudioStreamBuilder_setChannelCount(builder, 1);
     AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_I16);
+    AAudioStreamBuilder_setSessionId(builder, sessionId);
     AAudioStreamBuilder_setDataCallback(builder, inCallback, this);
     AAudioStreamBuilder_setErrorCallback(builder, errorCallback, this);
 
@@ -109,6 +104,7 @@ bool AudioEngine::start() {
 
     // Output Stream (Speaker - 16kHz Mono VOICE_COMMUNICATION)
     AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_OUTPUT);
+    AAudioStreamBuilder_setSessionId(builder, sessionId);
     AAudioStreamBuilder_setSharingMode(builder, AAUDIO_SHARING_MODE_SHARED);
     AAudioStreamBuilder_setSampleRate(builder, 16000);
     AAudioStreamBuilder_setChannelCount(builder, 1);
@@ -127,40 +123,17 @@ bool AudioEngine::start() {
     outputChannelCount_ = AAudioStream_getChannelCount(outputStream_);
     outputSampleRate_ = AAudioStream_getSampleRate(outputStream_);
 
-    // Music Output Stream (Speaker - 44.1kHz Stereo MEDIA)
-    AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_OUTPUT);
-    AAudioStreamBuilder_setSharingMode(builder, AAUDIO_SHARING_MODE_SHARED);
-    AAudioStreamBuilder_setSampleRate(builder, 44100);
-    AAudioStreamBuilder_setChannelCount(builder, 2);
-    AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_I16);
-    AAudioStreamBuilder_setUsage(builder, AAUDIO_USAGE_MEDIA);
-    AAudioStreamBuilder_setContentType(builder, AAUDIO_CONTENT_TYPE_MUSIC);
-    AAudioStreamBuilder_setDataCallback(builder, musicOutCallback, this);
-    AAudioStreamBuilder_setErrorCallback(builder, errorCallback, this);
-
-    if (AAudioStreamBuilder_openStream(builder, &musicOutputStream_) != AAUDIO_OK) {
-        // Music stream failure must NOT kill voice — some devices (e.g. Realme 6 Pro)
-        // reject 44.1kHz stereo. Voice mic + speaker are still fully usable.
-        LOGE("Failed to open AAudio music output stream — continuing without local music playback");
-        musicOutputStream_ = nullptr;
-    }
+    // Removed Music Output Stream
 
     AAudioStreamBuilder_delete(builder);
 
     // Set running BEFORE requestStart: the data callbacks fire on AAudio threads
-    // immediately and check isRunning_ — setting it after requestStart is a race
-    // that makes onAudioInput/onAudioOutput return CALLBACK_RESULT_STOP on the
-    // first callback, silently killing the stream on fast devices.
     isRunning_.store(true);
 
     AAudioStream_requestStart(inputStream_);
     AAudioStream_requestStart(outputStream_);
-    if (musicOutputStream_) {
-        AAudioStream_requestStart(musicOutputStream_);
-        LOGI("AAudio Input, Output, and Music streams started successfully");
-    } else {
-        LOGI("AAudio Input and Output (voice) streams started — music output unavailable on this device");
-    }
+    
+    LOGI("AAudio Input and Output streams started successfully");
     LOGI("Voice stream format: in=%dHz/%dch, out=%dHz/%dch", inputSampleRate_, inputChannelCount_, outputSampleRate_, outputChannelCount_);
     return true;
 }
@@ -182,11 +155,7 @@ void AudioEngine::stop() {
         outputStream_ = nullptr;
     }
 
-    if (musicOutputStream_) {
-        AAudioStream_requestStop(musicOutputStream_);
-        AAudioStream_close(musicOutputStream_);
-        musicOutputStream_ = nullptr;
-    }
+    // Output stream stopped
 
     // Reset per-client ring buffers (do not delete here; output callbacks may
     // still be winding down while streams are stopping).
@@ -199,8 +168,8 @@ void AudioEngine::stop() {
         clientBuffering_[i] = true; // reset cushion for next session
         clientStarveCount_[i] = 0;
     }
-    musicRingBuffer_.clear();
-    musicBuffering_.store(true, std::memory_order_relaxed);
+    localMusicInRingBuffer_.clear();
+    localMusicOutRingBuffer_.clear();
     captureAccumulator_.clear();
 
     LOGI("AAudio Engine stopped");
@@ -208,27 +177,47 @@ void AudioEngine::stop() {
 
 aaudio_data_callback_result_t AudioEngine::onAudioInput(const int16_t* audioData, int32_t numFrames) {
     if (!isRunning_.load()) return AAUDIO_CALLBACK_RESULT_STOP;
-    if (micMuted_.load()) return AAUDIO_CALLBACK_RESULT_CONTINUE;
 
     if (audioData == nullptr || numFrames <= 0) {
         return AAUDIO_CALLBACK_RESULT_CONTINUE;
     }
 
     const int channels = (inputChannelCount_ > 0) ? inputChannelCount_ : 1;
+    bool isMuted = micMuted_.load();
+    float musicGain = localMusicGain_.load(std::memory_order_relaxed);
 
-    // Downmix to mono if the device provides more than one channel.
-    const int16_t* monoPtr = audioData;
+    localMusicInScratch_.assign(static_cast<size_t>(numFrames), 0);
+    localMusicInRingBuffer_.read(localMusicInScratch_.data(), static_cast<size_t>(numFrames));
+
+    // Downmix to mono if the device provides more than one channel, and mix music.
+    const int16_t* monoPtr = nullptr;
+    inputMonoScratch_.resize(static_cast<size_t>(numFrames));
     if (channels > 1) {
-        inputMonoScratch_.resize(static_cast<size_t>(numFrames));
         for (int32_t i = 0; i < numFrames; ++i) {
             int32_t sum = 0;
-            for (int c = 0; c < channels; ++c) {
-                sum += audioData[static_cast<size_t>(i) * channels + c];
+            if (!isMuted) {
+                for (int c = 0; c < channels; ++c) {
+                    sum += audioData[static_cast<size_t>(i) * channels + c];
+                }
+                sum /= channels;
             }
-            inputMonoScratch_[static_cast<size_t>(i)] = static_cast<int16_t>(sum / channels);
+            int32_t musicSample = static_cast<int32_t>(localMusicInScratch_[static_cast<size_t>(i)] * musicGain);
+            int32_t mixed = sum + musicSample;
+            if (mixed > 32767) mixed = 32767;
+            if (mixed < -32768) mixed = -32768;
+            inputMonoScratch_[static_cast<size_t>(i)] = static_cast<int16_t>(mixed);
         }
-        monoPtr = inputMonoScratch_.data();
+    } else {
+        for (int32_t i = 0; i < numFrames; ++i) {
+            int32_t micSample = isMuted ? 0 : audioData[static_cast<size_t>(i)];
+            int32_t musicSample = static_cast<int32_t>(localMusicInScratch_[static_cast<size_t>(i)] * musicGain);
+            int32_t mixed = micSample + musicSample;
+            if (mixed > 32767) mixed = 32767;
+            if (mixed < -32768) mixed = -32768;
+            inputMonoScratch_[static_cast<size_t>(i)] = static_cast<int16_t>(mixed);
+        }
     }
+    monoPtr = inputMonoScratch_.data();
 
     // Accumulate and emit fixed 20ms voice packets. This prevents variable-size
     // memcpy packets from tearing and producing static/choppiness.
@@ -337,12 +326,20 @@ aaudio_data_callback_result_t AudioEngine::onAudioOutput(int16_t* audioData, int
         voiceStreams[static_cast<uint8_t>(i)] = tempBuffers.back().data();
     }
 
+    float musicGain = localMusicGain_.load(std::memory_order_relaxed);
+
+    localMusicOutScratch_.assign(static_cast<size_t>(numFrames), 0);
+    localMusicOutRingBuffer_.read(localMusicOutScratch_.data(), static_cast<size_t>(numFrames));
+    for (size_t i = 0; i < localMusicOutScratch_.size(); ++i) {
+        localMusicOutScratch_[i] = static_cast<int16_t>(localMusicOutScratch_[i] * musicGain);
+    }
+
     const int outChannels = (outputChannelCount_ > 0) ? outputChannelCount_ : 1;
     if (outChannels == 1) {
-        mixer_.mixFrame(voiceStreams, nullptr, audioData, static_cast<size_t>(numFrames));
+        mixer_.mixFrame(voiceStreams, localMusicOutScratch_.data(), audioData, static_cast<size_t>(numFrames));
     } else {
         outputMonoScratch_.assign(static_cast<size_t>(numFrames), 0);
-        mixer_.mixFrame(voiceStreams, nullptr, outputMonoScratch_.data(), static_cast<size_t>(numFrames));
+        mixer_.mixFrame(voiceStreams, localMusicOutScratch_.data(), outputMonoScratch_.data(), static_cast<size_t>(numFrames));
 
         for (int32_t i = 0; i < numFrames; ++i) {
             const int16_t s = outputMonoScratch_[static_cast<size_t>(i)];
@@ -355,59 +352,31 @@ aaudio_data_callback_result_t AudioEngine::onAudioOutput(int16_t* audioData, int
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
 
-aaudio_data_callback_result_t AudioEngine::onMusicOutput(int16_t* audioData, int32_t numFrames) {
-    if (!isRunning_.load()) return AAUDIO_CALLBACK_RESULT_STOP;
 
-    // Stereo 16-bit PCM = 2 channels * numFrames
-    size_t samplesToRead = static_cast<size_t>(numFrames) * 2;
 
-    if (musicBuffering_.load()) {
-        // Wait until we have at least one full callback worth of data before
-        // starting to drain. 8820 samples = ~100ms @ 44.1kHz stereo.
-        if (musicRingBuffer_.availableRead() >= 8820) {
-            musicBuffering_.store(false);
-        } else {
-            std::memset(audioData, 0, samplesToRead * sizeof(int16_t));
-            return AAUDIO_CALLBACK_RESULT_CONTINUE;
-        }
+size_t AudioEngine::feedLocalMusic(const int16_t* pcm, size_t sampleCount) {
+    size_t inWritten = localMusicInRingBuffer_.write(pcm, sampleCount);
+    localMusicOutRingBuffer_.write(pcm, sampleCount);
+    return inWritten;
+}
+
+size_t AudioEngine::getLocalMusicFreeSpace() {
+    size_t inFree = localMusicInRingBuffer_.availableWrite();
+    size_t outFree = localMusicOutRingBuffer_.availableWrite();
+    
+    // Resync if they drift apart by more than 0.5 seconds (8000 samples)
+    if (inFree > outFree + 8000) {
+        localMusicOutRingBuffer_.clear();
+        outFree = localMusicOutRingBuffer_.availableWrite();
+    } else if (outFree > inFree + 8000) {
+        localMusicInRingBuffer_.clear();
+        inFree = localMusicInRingBuffer_.availableWrite();
     }
-
-    size_t avail = musicRingBuffer_.availableRead();
-
-    if (avail == 0) {
-        // Ring is completely empty — true starvation. Re-arm the buffering cushion.
-        musicBuffering_.store(true);
-        std::memset(audioData, 0, samplesToRead * sizeof(int16_t));
-        return AAUDIO_CALLBACK_RESULT_CONTINUE;
-    }
-
-    if (avail >= samplesToRead) {
-        // Common case: enough data — read cleanly.
-        musicRingBuffer_.read(audioData, samplesToRead);
-    } else {
-        // Partial data: read what we have, zero-pad the rest.
-        // This produces a tiny glitch but avoids triggering a 100ms forced mute
-        // on every slightly-late packet.
-        size_t got = musicRingBuffer_.read(audioData, avail);
-        std::memset(audioData + got, 0, (samplesToRead - got) * sizeof(int16_t));
-    }
-
-    return AAUDIO_CALLBACK_RESULT_CONTINUE;
+    
+    return inFree < outFree ? inFree : outFree;
 }
 
 void AudioEngine::feedReceivedPacket(uint8_t originId, uint8_t flag, const uint8_t* payload, size_t payloadSize) {
-    if (flag == 0x02) { // FLAG_MUSIC
-        size_t sampleCount = payloadSize / sizeof(int16_t);
-        if (sampleCount > 0) {
-            size_t written = musicRingBuffer_.write(reinterpret_cast<const int16_t*>(payload), sampleCount);
-            if (written < sampleCount) {
-                musicRingBuffer_.clear();
-                musicRingBuffer_.write(reinterpret_cast<const int16_t*>(payload), sampleCount);
-            }
-        }
-        return;
-    }
-
     if (flag != 0x01) return; // only voice packets
 
     // Drop packets that originated from this device — they must never be played
@@ -461,3 +430,4 @@ void AudioEngine::setVadMode(int mode) {
 void AudioEngine::setMusicDucking(bool enabled) {
     mixer_.setDuckingEnabled(enabled);
 }
+

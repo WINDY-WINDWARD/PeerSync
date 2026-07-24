@@ -141,8 +141,7 @@ class TcpControlPlane {
                                 // Deduplicate: If this device was already connected (e.g. stale socket
                                 // from brief disconnection), remove the old zombie connection first.
                                 val staleEntries = connectedClients.entries.filter { 
-                                    it.value.peerDevice.deviceAddress == message.deviceAddress || 
-                                    it.value.peerDevice.deviceName == message.deviceName 
+                                    it.value.peerDevice.deviceAddress == message.deviceAddress 
                                 }
                                 staleEntries.forEach { 
                                     it.value.close()

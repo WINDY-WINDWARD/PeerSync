@@ -22,11 +22,11 @@ fun App(
     onJoinSession: (session: DiscoveredSession, pin: String) -> Unit = { _, _ -> },
     onDisconnect: () -> Unit = {},
     onMediaControl: (MediaAction) -> Unit = {},
-    onRequestMediaHost: () -> Unit = {},
     onSelectMusicRequest: () -> Unit = {},
     onToggleMicMute: (Boolean) -> Unit = {},
     onSelectAudioRoute: (AudioRoute) -> Unit = {},
     onSetPeerVolume: (Byte, Float) -> Unit = { _, _ -> },
+    onSetLocalMusicVolume: (Float) -> Unit = {},
     onVolumeStep: () -> Unit = {},
     onRescan: () -> Unit = {}
 ) {
@@ -43,11 +43,11 @@ fun App(
             onJoinSession = onJoinSession,
             onDisconnect = onDisconnect,
             onMediaControl = onMediaControl,
-            onRequestMediaHost = onRequestMediaHost,
             onSelectMusicRequest = onSelectMusicRequest,
             onToggleMicMute = onToggleMicMute,
             onSelectAudioRoute = onSelectAudioRoute,
             onSetPeerVolume = onSetPeerVolume,
+            onSetLocalMusicVolume = onSetLocalMusicVolume,
             onVolumeStep = onVolumeStep,
             onRescan = onRescan
         )

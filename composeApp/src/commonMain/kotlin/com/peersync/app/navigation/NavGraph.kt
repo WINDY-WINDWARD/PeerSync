@@ -1,4 +1,4 @@
-package com.peersync.app.navigation
+﻿package com.peersync.app.navigation
 
 import androidx.compose.runtime.Composable
 import com.peersync.app.model.ConnectionState
@@ -22,11 +22,11 @@ fun PeerSyncNavGraph(
     onJoinSession: (DiscoveredSession, String) -> Unit,
     onDisconnect: () -> Unit,
     onMediaControl: (MediaAction) -> Unit,
-    onRequestMediaHost: () -> Unit,
     onSelectMusicRequest: () -> Unit,
     onToggleMicMute: (Boolean) -> Unit,
     onSelectAudioRoute: (AudioRoute) -> Unit,
     onSetPeerVolume: (Byte, Float) -> Unit,
+    onSetLocalMusicVolume: (Float) -> Unit,
     onVolumeStep: () -> Unit,
     onRescan: () -> Unit
 ) {
@@ -41,11 +41,11 @@ fun PeerSyncNavGraph(
                 peerVolumes = peerVolumes,
                 onDisconnect = onDisconnect,
                 onMediaControl = onMediaControl,
-                onRequestMediaHost = onRequestMediaHost,
                 onSelectMusicRequest = onSelectMusicRequest,
                 onToggleMicMute = onToggleMicMute,
                 onSelectAudioRoute = onSelectAudioRoute,
                 onSetPeerVolume = onSetPeerVolume,
+                onSetLocalMusicVolume = onSetLocalMusicVolume,
                 onVolumeStep = onVolumeStep
             )
         }
@@ -60,3 +60,4 @@ fun PeerSyncNavGraph(
         }
     }
 }
+

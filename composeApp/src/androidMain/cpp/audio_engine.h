@@ -17,14 +17,20 @@ public:
     AudioEngine();
     ~AudioEngine();
 
-    bool start();
+    bool start(int sessionId);
     void stop();
 
     void feedReceivedPacket(uint8_t originId, uint8_t flag, const uint8_t* payload, size_t payloadSize);
+    
+    // Feed locally decoded 16kHz mono music to be mixed into the microphone stream
+    size_t feedLocalMusic(const int16_t* pcm, size_t sampleCount);
+    size_t getLocalMusicFreeSpace();
+
     void setVadMode(int mode);
     void setMusicDucking(bool enabled);
     void setMyOriginId(uint8_t id) { myOriginId_.store(id); }
     void setMicMuted(bool muted) { micMuted_.store(muted); }
+    void setLocalMusicGain(float gain) { localMusicGain_.store(gain, std::memory_order_relaxed); }
     void setPeerGain(uint8_t originId, float gain) {
         peerGains_[originId].store(gain, std::memory_order_relaxed);
     }
@@ -41,14 +47,12 @@ public:
 
     aaudio_data_callback_result_t onAudioInput(const int16_t* audioData, int32_t numFrames);
     aaudio_data_callback_result_t onAudioOutput(int16_t* audioData, int32_t numFrames);
-    aaudio_data_callback_result_t onMusicOutput(int16_t* audioData, int32_t numFrames);
 
 private:
     static constexpr size_t VOICE_FRAME_SAMPLES = 320; // 20ms @ 16kHz mono, network-safe packet size
 
     AAudioStream* inputStream_{nullptr};
     AAudioStream* outputStream_{nullptr};
-    AAudioStream* musicOutputStream_{nullptr};
 
     int inputChannelCount_{1};
     int outputChannelCount_{1};
@@ -75,7 +79,7 @@ private:
     // cushion after VOICE_STARVATION_LIMIT consecutive all-empty callbacks
     // (sustained dropout, not a single late packet).
     static constexpr size_t VOICE_JITTER_CUSHION   = 960;
-    // ~200ms of consecutive silence (AAudio typically fires every 5-10ms → 20-40 callbacks).
+    // ~200ms of consecutive silence (AAudio typically fires every 5-10ms +' 20-40 callbacks).
     static constexpr int    VOICE_STARVATION_LIMIT  = 30;
 
     std::atomic<RingBuffer*> clientRingBuffers_[256];
@@ -85,13 +89,19 @@ private:
     int  clientStarveCount_[256];
     std::mutex ringMapMutex_; // Guards ring lifecycle (create/write/clear/delete)
     
-    RingBuffer musicRingBuffer_{44100 * 2 * 2}; // 44.1kHz Stereo, 2 seconds buffer
-    std::atomic<bool> musicBuffering_{true};
+    // Holds the locally decoded music (16kHz mono) to be mixed into the mic stream and speaker.
+    // Capacity is 2 seconds (32000 samples).
+    RingBuffer localMusicInRingBuffer_{32000};
+    RingBuffer localMusicOutRingBuffer_{32000};
+
+    std::atomic<float> localMusicGain_{1.0f};
 
     std::atomic<float> peerGains_[256];
 
     std::vector<int16_t> inputMonoScratch_;
     std::vector<int16_t> outputMonoScratch_;
+    std::vector<int16_t> localMusicInScratch_;
+    std::vector<int16_t> localMusicOutScratch_;
     std::vector<int16_t> captureAccumulator_;
 
     AudioFrameCallback frameCallback_{nullptr};

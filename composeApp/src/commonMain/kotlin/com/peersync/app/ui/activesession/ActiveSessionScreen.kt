@@ -1,4 +1,4 @@
-package com.peersync.app.ui.activesession
+﻿package com.peersync.app.ui.activesession
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -33,11 +33,11 @@ fun ActiveSessionScreen(
     peerVolumes: Map<Byte, Float>,
     onDisconnect: () -> Unit,
     onMediaControl: (MediaAction) -> Unit,
-    onRequestMediaHost: () -> Unit,
     onSelectMusicRequest: () -> Unit,
     onToggleMicMute: (Boolean) -> Unit,
     onSelectAudioRoute: (AudioRoute) -> Unit,
     onSetPeerVolume: (Byte, Float) -> Unit,
+    onSetLocalMusicVolume: (Float) -> Unit,
     onVolumeStep: () -> Unit
 ) {
     Scaffold(
@@ -187,29 +187,14 @@ fun ActiveSessionScreen(
                     }
                 }
             }
-
-            // Shared Media Controls Card
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f))
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
+            if (myOriginId == 0.toByte()) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f))
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
                         Text("Shared Music Controls", fontWeight = FontWeight.Bold)
-                        Button(
-                            onClick = onRequestMediaHost,
-                            enabled = sessionInfo?.mediaHostId != myOriginId
-                        ) {
-                            Text(if (sessionInfo?.mediaHostId == myOriginId) "You are Host" else "Request Host")
-                        }
-                    }
-                    
-                    if (sessionInfo?.mediaHostId == myOriginId) {
                         Spacer(modifier = Modifier.height(8.dp))
                         Button(
                             onClick = onSelectMusicRequest,
@@ -217,25 +202,29 @@ fun ActiveSessionScreen(
                         ) {
                             Text("Select Music Folder")
                         }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceEvenly
-                    ) {
-                        IconButton(onClick = { onMediaControl(MediaAction.SKIP_PREVIOUS) }) {
-                            Text("⏮", fontSize = 24.sp)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly
+                        ) {
+                            IconButton(onClick = { onMediaControl(MediaAction.SKIP_PREVIOUS) }) { Text("PREV") }
+                            IconButton(onClick = { onMediaControl(MediaAction.PLAY) }) { Text("PLAY") }
+                            IconButton(onClick = { onMediaControl(MediaAction.PAUSE) }) { Text("PAUSE") }
+                            IconButton(onClick = { onMediaControl(MediaAction.SKIP_NEXT) }) { Text("NEXT") }
                         }
-                        IconButton(onClick = { onMediaControl(MediaAction.PLAY) }) {
-                            Text("▶", fontSize = 24.sp)
-                        }
-                        IconButton(onClick = { onMediaControl(MediaAction.PAUSE) }) {
-                            Text("⏸", fontSize = 24.sp)
-                        }
-                        IconButton(onClick = { onMediaControl(MediaAction.SKIP_NEXT) }) {
-                            Text("⏭", fontSize = 24.sp)
-                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        var musicVolume by remember { mutableStateOf(1.0f) }
+                        Text("Music Volume: ${(musicVolume * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
+                        Slider(
+                            value = musicVolume,
+                            onValueChange = { 
+                                musicVolume = it
+                                onSetLocalMusicVolume(it)
+                            },
+                            valueRange = 0f..3f,
+                            steps = 59,
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
                 }
             }
