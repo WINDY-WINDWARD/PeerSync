@@ -22,6 +22,13 @@ static aaudio_data_callback_result_t outCallback(
     return engine->onAudioOutput(static_cast<int16_t*>(audioData), numFrames);
 }
 
+static aaudio_data_callback_result_t musicOutCallback(
+    AAudioStream* stream, void* userData, void* audioData, int32_t numFrames
+) {
+    auto* engine = static_cast<AudioEngine*>(userData);
+    return engine->onMusicOutput(static_cast<int16_t*>(audioData), numFrames);
+}
+
 static void errorCallback(AAudioStream* stream, void* userData, aaudio_result_t error) {
     AudioEngine::OnStreamError(stream, userData, error);
 }
@@ -32,6 +39,7 @@ void AudioEngine::OnStreamError(AAudioStream* stream, void* userData, aaudio_res
     if (engine != nullptr) {
         if (stream == engine->inputStream_) direction = "INPUT";
         else if (stream == engine->outputStream_) direction = "OUTPUT";
+        else if (stream == engine->musicOutputStream_) direction = "MUSIC_OUTPUT";
     }
     LOGE("AAudio stream %s error/disconnected: %s (%d)", direction, AAudio_convertResultToText(error), error);
     if (engine != nullptr) {
@@ -44,14 +52,37 @@ void AudioEngine::OnStreamError(AAudioStream* stream, void* userData, aaudio_res
     }
 }
 
-AudioEngine::AudioEngine() {}
+AudioEngine::AudioEngine() {
+    for (int i = 0; i < 256; ++i) {
+        clientRingBuffers_[i].store(nullptr, std::memory_order_relaxed);
+        peerGains_[i].store(1.0f, std::memory_order_relaxed);
+        clientBuffering_[i]   = true; // wait for initial 60ms cushion before draining
+        clientStarveCount_[i] = 0;
+    }
+    inputMonoScratch_.reserve(VOICE_FRAME_SAMPLES * 2);
+    outputMonoScratch_.reserve(VOICE_FRAME_SAMPLES * 2);
+    captureAccumulator_.reserve(VOICE_FRAME_SAMPLES * 8);
+}
 
 AudioEngine::~AudioEngine() {
     stop();
+
+    std::lock_guard<std::mutex> lock(ringMapMutex_);
+    for (int i = 0; i < 256; ++i) {
+        RingBuffer* rb = clientRingBuffers_[i].exchange(nullptr, std::memory_order_acq_rel);
+        if (rb) {
+            delete rb;
+        }
+    }
 }
 
 bool AudioEngine::start() {
     if (isRunning_.load()) return true;
+
+    // Ensure stale state from previous runs is cleared.
+    musicRingBuffer_.clear();
+    musicBuffering_.store(true, std::memory_order_relaxed);
+    captureAccumulator_.clear();
 
     AAudioStreamBuilder* builder = nullptr;
     AAudio_createStreamBuilder(&builder);
@@ -73,6 +104,8 @@ bool AudioEngine::start() {
         AAudioStreamBuilder_delete(builder);
         return false;
     }
+    inputChannelCount_ = AAudioStream_getChannelCount(inputStream_);
+    inputSampleRate_ = AAudioStream_getSampleRate(inputStream_);
 
     // Output Stream (Speaker - 16kHz Mono VOICE_COMMUNICATION)
     AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_OUTPUT);
@@ -91,6 +124,26 @@ bool AudioEngine::start() {
         AAudioStreamBuilder_delete(builder);
         return false;
     }
+    outputChannelCount_ = AAudioStream_getChannelCount(outputStream_);
+    outputSampleRate_ = AAudioStream_getSampleRate(outputStream_);
+
+    // Music Output Stream (Speaker - 44.1kHz Stereo MEDIA)
+    AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_OUTPUT);
+    AAudioStreamBuilder_setSharingMode(builder, AAUDIO_SHARING_MODE_SHARED);
+    AAudioStreamBuilder_setSampleRate(builder, 44100);
+    AAudioStreamBuilder_setChannelCount(builder, 2);
+    AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_I16);
+    AAudioStreamBuilder_setUsage(builder, AAUDIO_USAGE_MEDIA);
+    AAudioStreamBuilder_setContentType(builder, AAUDIO_CONTENT_TYPE_MUSIC);
+    AAudioStreamBuilder_setDataCallback(builder, musicOutCallback, this);
+    AAudioStreamBuilder_setErrorCallback(builder, errorCallback, this);
+
+    if (AAudioStreamBuilder_openStream(builder, &musicOutputStream_) != AAUDIO_OK) {
+        // Music stream failure must NOT kill voice — some devices (e.g. Realme 6 Pro)
+        // reject 44.1kHz stereo. Voice mic + speaker are still fully usable.
+        LOGE("Failed to open AAudio music output stream — continuing without local music playback");
+        musicOutputStream_ = nullptr;
+    }
 
     AAudioStreamBuilder_delete(builder);
 
@@ -102,13 +155,19 @@ bool AudioEngine::start() {
 
     AAudioStream_requestStart(inputStream_);
     AAudioStream_requestStart(outputStream_);
-
-    LOGI("AAudio Input and Output streams started successfully");
+    if (musicOutputStream_) {
+        AAudioStream_requestStart(musicOutputStream_);
+        LOGI("AAudio Input, Output, and Music streams started successfully");
+    } else {
+        LOGI("AAudio Input and Output (voice) streams started — music output unavailable on this device");
+    }
+    LOGI("Voice stream format: in=%dHz/%dch, out=%dHz/%dch", inputSampleRate_, inputChannelCount_, outputSampleRate_, outputChannelCount_);
     return true;
 }
 
 void AudioEngine::stop() {
-    if (!isRunning_.load()) return;
+    // Always attempt full teardown even if isRunning_ is already false
+    // (e.g. after AAudio error callback), otherwise stale streams remain open.
     isRunning_.store(false);
 
     if (inputStream_) {
@@ -123,12 +182,26 @@ void AudioEngine::stop() {
         outputStream_ = nullptr;
     }
 
-    // Clean up per-client ring buffers
-    std::lock_guard<std::mutex> lock(ringMapMutex_);
-    for (auto& kv : clientRingBuffers_) {
-        delete kv.second;
+    if (musicOutputStream_) {
+        AAudioStream_requestStop(musicOutputStream_);
+        AAudioStream_close(musicOutputStream_);
+        musicOutputStream_ = nullptr;
     }
-    clientRingBuffers_.clear();
+
+    // Reset per-client ring buffers (do not delete here; output callbacks may
+    // still be winding down while streams are stopping).
+    std::lock_guard<std::mutex> lock(ringMapMutex_);
+    for (int i = 0; i < 256; ++i) {
+        RingBuffer* rb = clientRingBuffers_[i].load(std::memory_order_acquire);
+        if (rb) {
+            rb->clear();
+        }
+        clientBuffering_[i] = true; // reset cushion for next session
+        clientStarveCount_[i] = 0;
+    }
+    musicRingBuffer_.clear();
+    musicBuffering_.store(true, std::memory_order_relaxed);
+    captureAccumulator_.clear();
 
     LOGI("AAudio Engine stopped");
 }
@@ -137,13 +210,62 @@ aaudio_data_callback_result_t AudioEngine::onAudioInput(const int16_t* audioData
     if (!isRunning_.load()) return AAUDIO_CALLBACK_RESULT_STOP;
     if (micMuted_.load()) return AAUDIO_CALLBACK_RESULT_CONTINUE;
 
-    uint8_t flag = 0x01;
-    // Stub codec: memcpy PCM bytes directly into encoded buffer
-    uint8_t encodedBuffer[1024];
-    int encodedBytes = voiceCodec_.encode(audioData, numFrames, encodedBuffer, sizeof(encodedBuffer));
+    if (audioData == nullptr || numFrames <= 0) {
+        return AAUDIO_CALLBACK_RESULT_CONTINUE;
+    }
 
-    if (frameCallback_ && encodedBytes > 0) {
-        frameCallback_(flag, encodedBuffer, static_cast<size_t>(encodedBytes));
+    const int channels = (inputChannelCount_ > 0) ? inputChannelCount_ : 1;
+
+    // Downmix to mono if the device provides more than one channel.
+    const int16_t* monoPtr = audioData;
+    if (channels > 1) {
+        inputMonoScratch_.resize(static_cast<size_t>(numFrames));
+        for (int32_t i = 0; i < numFrames; ++i) {
+            int32_t sum = 0;
+            for (int c = 0; c < channels; ++c) {
+                sum += audioData[static_cast<size_t>(i) * channels + c];
+            }
+            inputMonoScratch_[static_cast<size_t>(i)] = static_cast<int16_t>(sum / channels);
+        }
+        monoPtr = inputMonoScratch_.data();
+    }
+
+    // Accumulate and emit fixed 20ms voice packets. This prevents variable-size
+    // memcpy packets from tearing and producing static/choppiness.
+    captureAccumulator_.insert(
+        captureAccumulator_.end(),
+        monoPtr,
+        monoPtr + static_cast<size_t>(numFrames)
+    );
+
+    uint8_t flag = 0x01;
+    uint8_t encodedBuffer[VOICE_FRAME_SAMPLES * sizeof(int16_t)];
+
+    while (captureAccumulator_.size() >= VOICE_FRAME_SAMPLES) {
+        int encodedBytes = voiceCodec_.encode(
+            captureAccumulator_.data(),
+            VOICE_FRAME_SAMPLES,
+            encodedBuffer,
+            sizeof(encodedBuffer)
+        );
+
+        if (frameCallback_ && encodedBytes > 0) {
+            frameCallback_(flag, encodedBuffer, static_cast<size_t>(encodedBytes));
+        }
+
+        captureAccumulator_.erase(
+            captureAccumulator_.begin(),
+            captureAccumulator_.begin() + static_cast<std::ptrdiff_t>(VOICE_FRAME_SAMPLES)
+        );
+    }
+
+    // Bound accumulator growth on stalls/dropouts.
+    const size_t maxBufferedSamples = VOICE_FRAME_SAMPLES * 10;
+    if (captureAccumulator_.size() > maxBufferedSamples) {
+        captureAccumulator_.erase(
+            captureAccumulator_.begin(),
+            captureAccumulator_.end() - static_cast<std::ptrdiff_t>(VOICE_FRAME_SAMPLES)
+        );
     }
 
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
@@ -152,36 +274,144 @@ aaudio_data_callback_result_t AudioEngine::onAudioInput(const int16_t* audioData
 aaudio_data_callback_result_t AudioEngine::onAudioOutput(int16_t* audioData, int32_t numFrames) {
     if (!isRunning_.load()) return AAUDIO_CALLBACK_RESULT_STOP;
 
+    if (audioData == nullptr || numFrames <= 0) {
+        return AAUDIO_CALLBACK_RESULT_CONTINUE;
+    }
+
     // Build voice stream map for mixer: one temp buffer per active client.
     // We do NOT lock ringMapMutex_ here — the audio thread must never block.
-    // Map insertions (from feedReceivedPacket) are serialised by the mutex on
-    // the JNI thread, and std::map iteration here is safe as long as no erase
-    // happens concurrently (erases only happen in stop(), which sets isRunning_
-    // to false before acquiring the mutex, so this callback has already returned).
+    // Iterating fixed arrays of atomics is 100% thread-safe.
     std::map<uint8_t, const int16_t*> voiceStreams;
     std::vector<std::vector<int16_t>> tempBuffers;
 
-    for (auto& kv : clientRingBuffers_) {
-        RingBuffer* rb = kv.second;
-        if (rb->availableRead() == 0) continue;
+    for (int i = 0; i < 256; ++i) {
+        RingBuffer* rb = clientRingBuffers_[i].load(std::memory_order_acquire);
+        if (!rb) continue;
+
+        size_t avail = rb->availableRead();
+
+        // Initial jitter cushion: wait until VOICE_JITTER_CUSHION samples (60ms)
+        // have accumulated before first drain. Absorbs startup Wi-Fi jitter.
+        if (clientBuffering_[i]) {
+            if (avail < VOICE_JITTER_CUSHION) {
+                continue; // still filling — output silence for this client
+            }
+            clientBuffering_[i]   = false;
+            clientStarveCount_[i] = 0;
+        }
+
+        if (avail == 0) {
+            // Ring is empty this callback. Count consecutive empty callbacks.
+            // A single late 20ms packet should produce one callback of silence
+            // (~10ms), NOT a forced 60ms re-buffering mute. Only re-arm the
+            // cushion after VOICE_STARVATION_LIMIT consecutive empty callbacks
+            // (~150-300ms of true dropout).
+            clientStarveCount_[i]++;
+            if (clientStarveCount_[i] >= VOICE_STARVATION_LIMIT) {
+                clientBuffering_[i]   = true;
+                clientStarveCount_[i] = 0;
+            }
+            continue; // output silence for this client this callback
+        }
+
+        // Data is available — reset starvation counter and drain.
+        clientStarveCount_[i] = 0;
 
         std::vector<int16_t> buf(numFrames, 0);
-        size_t got = rb->read(buf.data(), static_cast<size_t>(numFrames));
-        // Zero-pad any shortfall (underrun) — already initialised to 0 above
-        (void)got;
+        rb->read(buf.data(), static_cast<size_t>(numFrames));
+        // buf is pre-zeroed; any unread samples (ring shorter than numFrames)
+        // are naturally zero-padded — no hard mute, just a tiny glitch.
+
+        // Apply peer-specific gain
+        float gain = peerGains_[i].load(std::memory_order_relaxed);
+        if (gain != 1.0f) {
+            for (size_t j = 0; j < buf.size(); ++j) {
+                float sample = buf[j] * gain;
+                if (sample > 32767.0f) sample = 32767.0f;
+                else if (sample < -32768.0f) sample = -32768.0f;
+                buf[j] = static_cast<int16_t>(sample);
+            }
+        }
+
         tempBuffers.push_back(std::move(buf));
-        voiceStreams[kv.first] = tempBuffers.back().data();
+        voiceStreams[static_cast<uint8_t>(i)] = tempBuffers.back().data();
     }
 
-    mixer_.mixFrame(voiceStreams, nullptr, audioData, static_cast<size_t>(numFrames));
+    const int outChannels = (outputChannelCount_ > 0) ? outputChannelCount_ : 1;
+    if (outChannels == 1) {
+        mixer_.mixFrame(voiceStreams, nullptr, audioData, static_cast<size_t>(numFrames));
+    } else {
+        outputMonoScratch_.assign(static_cast<size_t>(numFrames), 0);
+        mixer_.mixFrame(voiceStreams, nullptr, outputMonoScratch_.data(), static_cast<size_t>(numFrames));
+
+        for (int32_t i = 0; i < numFrames; ++i) {
+            const int16_t s = outputMonoScratch_[static_cast<size_t>(i)];
+            const size_t base = static_cast<size_t>(i) * outChannels;
+            for (int c = 0; c < outChannels; ++c) {
+                audioData[base + c] = s;
+            }
+        }
+    }
+    return AAUDIO_CALLBACK_RESULT_CONTINUE;
+}
+
+aaudio_data_callback_result_t AudioEngine::onMusicOutput(int16_t* audioData, int32_t numFrames) {
+    if (!isRunning_.load()) return AAUDIO_CALLBACK_RESULT_STOP;
+
+    // Stereo 16-bit PCM = 2 channels * numFrames
+    size_t samplesToRead = static_cast<size_t>(numFrames) * 2;
+
+    if (musicBuffering_.load()) {
+        // Wait until we have at least one full callback worth of data before
+        // starting to drain. 8820 samples = ~100ms @ 44.1kHz stereo.
+        if (musicRingBuffer_.availableRead() >= 8820) {
+            musicBuffering_.store(false);
+        } else {
+            std::memset(audioData, 0, samplesToRead * sizeof(int16_t));
+            return AAUDIO_CALLBACK_RESULT_CONTINUE;
+        }
+    }
+
+    size_t avail = musicRingBuffer_.availableRead();
+
+    if (avail == 0) {
+        // Ring is completely empty — true starvation. Re-arm the buffering cushion.
+        musicBuffering_.store(true);
+        std::memset(audioData, 0, samplesToRead * sizeof(int16_t));
+        return AAUDIO_CALLBACK_RESULT_CONTINUE;
+    }
+
+    if (avail >= samplesToRead) {
+        // Common case: enough data — read cleanly.
+        musicRingBuffer_.read(audioData, samplesToRead);
+    } else {
+        // Partial data: read what we have, zero-pad the rest.
+        // This produces a tiny glitch but avoids triggering a 100ms forced mute
+        // on every slightly-late packet.
+        size_t got = musicRingBuffer_.read(audioData, avail);
+        std::memset(audioData + got, 0, (samplesToRead - got) * sizeof(int16_t));
+    }
+
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
 
 void AudioEngine::feedReceivedPacket(uint8_t originId, uint8_t flag, const uint8_t* payload, size_t payloadSize) {
+    if (flag == 0x02) { // FLAG_MUSIC
+        size_t sampleCount = payloadSize / sizeof(int16_t);
+        if (sampleCount > 0) {
+            size_t written = musicRingBuffer_.write(reinterpret_cast<const int16_t*>(payload), sampleCount);
+            if (written < sampleCount) {
+                musicRingBuffer_.clear();
+                musicRingBuffer_.write(reinterpret_cast<const int16_t*>(payload), sampleCount);
+            }
+        }
+        return;
+    }
+
     if (flag != 0x01) return; // only voice packets
 
     // Drop packets that originated from this device — they must never be played
-    // back locally (self-echo / feedback).
+    // back locally (self-echo / feedback) for VOICE.
     if (originId == myOriginId_.load()) return;
 
     // Decode: stub codec is a memcpy, payloadSize bytes → payloadSize/2 samples
@@ -191,29 +421,36 @@ void AudioEngine::feedReceivedPacket(uint8_t originId, uint8_t flag, const uint8
     std::vector<int16_t> pcm(sampleCount);
     voiceCodec_.decode(payload, payloadSize, pcm.data(), sampleCount);
 
-    // Get or create the ring buffer for this client (mutex only for map access)
-    RingBuffer* rb = nullptr;
-    {
+    // Get or create the ring buffer for this client.
+    RingBuffer* rb = clientRingBuffers_[originId].load(std::memory_order_acquire);
+    if (rb == nullptr) {
         std::lock_guard<std::mutex> lock(ringMapMutex_);
-        auto it = clientRingBuffers_.find(originId);
-        if (it == clientRingBuffers_.end()) {
+        rb = clientRingBuffers_[originId].load(std::memory_order_acquire);
+        if (rb == nullptr) {
             rb = new RingBuffer(RING_CAPACITY);
-            clientRingBuffers_[originId] = rb;
+            clientRingBuffers_[originId].store(rb, std::memory_order_release);
+            clientBuffering_[originId]   = true; // wait for 60ms cushion before draining
+            clientStarveCount_[originId] = 0;
             LOGI("Created ring buffer for client originId=%u", originId);
-        } else {
-            rb = it->second;
         }
     }
 
-    // Write decoded PCM into the ring buffer. If the buffer is full (extreme
-    // backlog), drop the oldest data by clearing and rewriting — this prevents
-    // a growing delay if the output thread stalls temporarily.
-    size_t written = rb->write(pcm.data(), sampleCount);
-    if (written < sampleCount) {
-        // Buffer was full: clear stale data and write fresh packet
-        rb->clear();
-        rb->write(pcm.data(), sampleCount);
-        LOGD("Ring buffer full for originId=%u — cleared stale data", originId);
+    // Write decoded PCM into the ring buffer. RingBuffer is SPSC; both this
+    // network thread and stop() can mutate buffer state, so keep lifecycle ops
+    // under the same mutex to avoid concurrent clear/delete with write.
+    {
+        std::lock_guard<std::mutex> lock(ringMapMutex_);
+        RingBuffer* live = clientRingBuffers_[originId].load(std::memory_order_acquire);
+        if (live == nullptr) {
+            return;
+        }
+
+        size_t written = live->write(pcm.data(), sampleCount);
+        if (written < sampleCount) {
+            live->clear();
+            live->write(pcm.data(), sampleCount);
+            LOGD("Ring buffer full for originId=%u — cleared stale data", originId);
+        }
     }
 }
 

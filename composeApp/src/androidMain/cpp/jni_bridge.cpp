@@ -146,4 +146,11 @@ Java_com_peersync_app_audio_AudioBridge_nativeSetMicMuted(JNIEnv* env, jobject t
     }
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_peersync_app_audio_AudioBridge_nativeSetPeerVolume(JNIEnv* env, jobject thiz, jbyte originId, jfloat volume) {
+    if (gAudioEngine) {
+        gAudioEngine->setPeerGain(static_cast<uint8_t>(originId), static_cast<float>(volume));
+    }
+}
+
 }

@@ -14,30 +14,42 @@ fun App(
     connectionState: ConnectionState = ConnectionState.Disconnected,
     discoveredSessions: List<DiscoveredSession> = emptyList(),
     sessionInfo: SessionInfo? = null,
+    myOriginId: Byte = 0,
     isMicMuted: Boolean = false,
     audioRoute: AudioRoute = AudioRoute.LOUDSPEAKER,
+    peerVolumes: Map<Byte, Float> = emptyMap(),
     onCreateSession: (sessionName: String) -> Unit = {},
     onJoinSession: (session: DiscoveredSession, pin: String) -> Unit = { _, _ -> },
     onDisconnect: () -> Unit = {},
     onMediaControl: (MediaAction) -> Unit = {},
     onRequestMediaHost: () -> Unit = {},
+    onSelectMusicRequest: () -> Unit = {},
     onToggleMicMute: (Boolean) -> Unit = {},
-    onSelectAudioRoute: (AudioRoute) -> Unit = {}
+    onSelectAudioRoute: (AudioRoute) -> Unit = {},
+    onSetPeerVolume: (Byte, Float) -> Unit = { _, _ -> },
+    onVolumeStep: () -> Unit = {},
+    onRescan: () -> Unit = {}
 ) {
     MaterialTheme {
         PeerSyncNavGraph(
             connectionState = connectionState,
             discoveredSessions = discoveredSessions,
             sessionInfo = sessionInfo,
+            myOriginId = myOriginId,
             isMicMuted = isMicMuted,
             audioRoute = audioRoute,
+            peerVolumes = peerVolumes,
             onCreateSession = onCreateSession,
             onJoinSession = onJoinSession,
             onDisconnect = onDisconnect,
             onMediaControl = onMediaControl,
             onRequestMediaHost = onRequestMediaHost,
+            onSelectMusicRequest = onSelectMusicRequest,
             onToggleMicMute = onToggleMicMute,
-            onSelectAudioRoute = onSelectAudioRoute
+            onSelectAudioRoute = onSelectAudioRoute,
+            onSetPeerVolume = onSetPeerVolume,
+            onVolumeStep = onVolumeStep,
+            onRescan = onRescan
         )
     }
 }

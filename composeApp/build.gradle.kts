@@ -30,6 +30,7 @@ kotlin {
         androidMain.dependencies {
             implementation(libs.androidx.activity.compose)
             implementation(libs.kotlinx.coroutines.android)
+            implementation("androidx.documentfile:documentfile:1.0.1")
         }
     }
 }

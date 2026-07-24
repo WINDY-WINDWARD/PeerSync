@@ -8,6 +8,9 @@ import android.os.Build
 import android.util.Log
 import com.peersync.app.model.AudioPacketHeader
 import com.peersync.app.model.AudioRoute
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -49,6 +52,7 @@ class AudioBridge(private val context: Context) {
     private external fun nativeSetMusicDucking(enabled: Boolean)
     private external fun nativeSetMyOriginId(originId: Byte)
     private external fun nativeSetMicMuted(muted: Boolean)
+    private external fun nativeSetPeerVolume(originId: Byte, volume: Float)
 
     fun initialize(): Boolean {
         return nativeInit()
@@ -72,42 +76,53 @@ class AudioBridge(private val context: Context) {
         nativeSetMicMuted(muted)
     }
 
+    fun setPeerVolume(originId: Byte, volume: Float) {
+        nativeSetPeerVolume(originId, volume)
+    }
+
     fun setAudioRoute(route: AudioRoute) {
+        // isSpeakerphoneOn is the reliable hardware gate in MODE_IN_COMMUNICATION.
+        // It must be set on every API level — setCommunicationDevice (API 31+) only
+        // affects VOICE_COMMUNICATION streams and can silently fail if the device
+        // isn't currently enumerated. Set the low-level flag first so the hardware
+        // routing takes effect immediately regardless of API level.
+        when (route) {
+            AudioRoute.LOUDSPEAKER -> {
+                audioManager.stopBluetoothSco()
+                try { audioManager.isSpeakerphoneOn = true } catch (_: Exception) {}
+            }
+            AudioRoute.EARPIECE -> {
+                audioManager.stopBluetoothSco()
+                try { audioManager.isSpeakerphoneOn = false } catch (_: Exception) {}
+            }
+            AudioRoute.BLUETOOTH -> {
+                try { audioManager.isSpeakerphoneOn = false } catch (_: Exception) {}
+                audioManager.startBluetoothSco()
+            }
+        }
+
+        // On API 31+ also attempt the modern communication device API as a
+        // best-effort enhancement for future-compatibility.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val type = when (route) {
+            val targetType = when (route) {
                 AudioRoute.LOUDSPEAKER -> android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
-                AudioRoute.EARPIECE -> android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
-                AudioRoute.BLUETOOTH -> {
-                    // Try to find a Bluetooth device, prioritizing SCO over A2DP
+                AudioRoute.EARPIECE    -> android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+                AudioRoute.BLUETOOTH   -> {
                     val devices = audioManager.availableCommunicationDevices
                     devices.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO }?.type
                         ?: devices.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET }?.type
-                        ?: android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+                        ?: android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO
                 }
             }
-            
-            val device = audioManager.availableCommunicationDevices.firstOrNull { it.type == type }
+            val device = audioManager.availableCommunicationDevices.firstOrNull { it.type == targetType }
             if (device != null) {
                 audioManager.setCommunicationDevice(device)
-                Log.d(TAG, "Routed audio to ${route.name}")
+                Log.d(TAG, "Routed audio to ${route.name} via setCommunicationDevice")
             } else {
-                Log.w(TAG, "Device type $type not found for route ${route.name}")
+                Log.d(TAG, "Routed audio to ${route.name} via isSpeakerphoneOn (device type $targetType not in communication devices)")
             }
         } else {
-            when (route) {
-                AudioRoute.LOUDSPEAKER -> {
-                    audioManager.stopBluetoothSco()
-                    try { audioManager.isSpeakerphoneOn = true } catch (_: Exception) {}
-                }
-                AudioRoute.EARPIECE -> {
-                    audioManager.stopBluetoothSco()
-                    try { audioManager.isSpeakerphoneOn = false } catch (_: Exception) {}
-                }
-                AudioRoute.BLUETOOTH -> {
-                    try { audioManager.isSpeakerphoneOn = false } catch (_: Exception) {}
-                    audioManager.startBluetoothSco()
-                }
-            }
+            Log.d(TAG, "Routed audio to ${route.name} via isSpeakerphoneOn (legacy path)")
         }
     }
 
@@ -131,7 +146,11 @@ class AudioBridge(private val context: Context) {
     // Called from C++ JNI bridge when an AAudio stream errors or disconnects
     fun onStreamError(errorMessage: String) {
         Log.e(TAG, "Native AAudio stream error: $errorMessage")
-        _streamErrors.tryEmit(errorMessage)
+        // Launch on a separate thread to break away from the AAudio callback thread
+        // This prevents a fatal SIGABRT when PeerSyncEngine attempts to restart the stream.
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            _streamErrors.emit(errorMessage)
+        }
     }
 
     private fun requestCommunicationFocus() {

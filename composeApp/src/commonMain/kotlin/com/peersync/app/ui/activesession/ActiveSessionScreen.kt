@@ -20,18 +20,25 @@ import com.peersync.app.model.MediaAction
 import com.peersync.app.model.PeerDevice
 import com.peersync.app.model.SessionInfo
 
+import kotlin.math.roundToInt
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ActiveSessionScreen(
     sessionInfo: SessionInfo?,
     isGroupOwner: Boolean,
+    myOriginId: Byte,
     isMicMuted: Boolean,
     audioRoute: AudioRoute,
+    peerVolumes: Map<Byte, Float>,
     onDisconnect: () -> Unit,
     onMediaControl: (MediaAction) -> Unit,
     onRequestMediaHost: () -> Unit,
+    onSelectMusicRequest: () -> Unit,
     onToggleMicMute: (Boolean) -> Unit,
-    onSelectAudioRoute: (AudioRoute) -> Unit
+    onSelectAudioRoute: (AudioRoute) -> Unit,
+    onSetPeerVolume: (Byte, Float) -> Unit,
+    onVolumeStep: () -> Unit
 ) {
     Scaffold(
         topBar = {
@@ -92,6 +99,8 @@ fun ActiveSessionScreen(
                             modifier = Modifier.padding(16.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
+                            var lastHapticValue by remember(peer.originId) { mutableStateOf(peerVolumes[peer.originId] ?: 1.0f) }
+
                             Box(
                                 modifier = Modifier
                                     .size(48.dp)
@@ -115,6 +124,25 @@ fun ActiveSessionScreen(
                                 fontSize = 12.sp,
                                 color = Color.Gray
                             )
+
+                            if (peer.originId != myOriginId) {
+                                val currentVol = peerVolumes[peer.originId] ?: 1.0f
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text("Volume: ${(currentVol * 100).roundToInt()}%", fontSize = 10.sp)
+                                Slider(
+                                    value = currentVol,
+                                    onValueChange = { newValue ->
+                                        onSetPeerVolume(peer.originId, newValue)
+                                        if (newValue != lastHapticValue) {
+                                            onVolumeStep()
+                                            lastHapticValue = newValue
+                                        }
+                                    },
+                                    valueRange = 0f..2f,
+                                    steps = 39,
+                                    modifier = Modifier.fillMaxWidth().height(24.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -173,10 +201,24 @@ fun ActiveSessionScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text("Shared Music Controls", fontWeight = FontWeight.Bold)
-                        Button(onClick = onRequestMediaHost) {
-                            Text("Request Host")
+                        Button(
+                            onClick = onRequestMediaHost,
+                            enabled = sessionInfo?.mediaHostId != myOriginId
+                        ) {
+                            Text(if (sessionInfo?.mediaHostId == myOriginId) "You are Host" else "Request Host")
                         }
                     }
+                    
+                    if (sessionInfo?.mediaHostId == myOriginId) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Button(
+                            onClick = onSelectMusicRequest,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Select Music Folder")
+                        }
+                    }
+
                     Spacer(modifier = Modifier.height(8.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),

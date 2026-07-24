@@ -2,6 +2,7 @@ package com.peersync.app.engine
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.net.Uri
 import android.util.Log
 import com.peersync.app.model.*
 import com.peersync.app.network.*
@@ -11,6 +12,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
 import com.peersync.app.audio.AudioBridge
+import com.peersync.app.audio.MediaHostManager
 
 class PeerSyncEngine private constructor(private val context: Context) {
 
@@ -34,9 +36,21 @@ class PeerSyncEngine private constructor(private val context: Context) {
     val tcpControlPlane = TcpControlPlane()
     val udpDataPlane = UdpDataPlane()
     val audioBridge = AudioBridge(context)
+    val mediaHostManager = MediaHostManager(context) { header, payload ->
+        // Always send + loopback music produced by this device (we are the host,
+        // so header.originId == _myOriginId). Do NOT gate on activeHostId: it may
+        // be null briefly while sessionInfo propagates, which would silently drop
+        // every music packet at startup.
+        udpDataPlane.sendAudioPacket(header, payload)
+        // Loopback: host hears its own music via the local audio engine.
+        audioBridge.feedReceivedPacket(header.originId, header.payloadFlag, payload)
+    }
 
     private val _connectionState = MutableStateFlow(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
+
+    private val _myOriginId = MutableStateFlow<Byte>(0)
+    val myOriginId: StateFlow<Byte> = _myOriginId.asStateFlow()
 
     val discoveredSessions: StateFlow<List<DiscoveredSession>> = wifiP2pController.discoveredSessions
     val sessionInfo: StateFlow<SessionInfo?> = tcpControlPlane.sessionInfo
@@ -46,6 +60,9 @@ class PeerSyncEngine private constructor(private val context: Context) {
 
     private val _audioRoute = MutableStateFlow(AudioRoute.LOUDSPEAKER)
     val audioRoute: StateFlow<AudioRoute> = _audioRoute.asStateFlow()
+
+    private val _peerVolumes = MutableStateFlow<Map<Byte, Float>>(emptyMap())
+    val peerVolumes: StateFlow<Map<Byte, Float>> = _peerVolumes.asStateFlow()
 
     private var myDeviceName: String = "PeerDevice"
     private var myP2pAddress: String = "02:00:00:00:00:00"
@@ -64,11 +81,33 @@ class PeerSyncEngine private constructor(private val context: Context) {
         audioBridge.initialize()
         observeP2pState()
         observeControlPlaneMessages()
+        observeMediaHostOwnership()
         observeGoLossEvents()
         observeAudioBridgeOutgoingFrames()
         observeUdpIncomingAudioPackets()
         observeStreamErrors()
         startFrameCounters()
+    }
+
+    private fun resolveMyOriginId(info: SessionInfo?): Byte {
+        if (info == null) return _myOriginId.value
+
+        if (info.members.any { it.originId == _myOriginId.value }) {
+            return _myOriginId.value
+        }
+
+        info.members.firstOrNull { it.deviceName == myDeviceName }?.let { return it.originId }
+
+        if (info.members.size == 1) {
+            return info.members.first().originId
+        }
+
+        val nonGo = info.members.firstOrNull { !it.isGroupOwner }
+        if (nonGo != null && _connectionState.value == ConnectionState.ConnectedClient) {
+            return nonGo.originId
+        }
+
+        return if (_connectionState.value == ConnectionState.ConnectedGroupOwner) 0 else _myOriginId.value
     }
 
     private fun observeP2pState() {
@@ -79,7 +118,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
                         if (_connectionState.value != ConnectionState.ConnectedGroupOwner) {
                             Log.d(TAG, "GroupCreated received. Transitioning to ConnectedGroupOwner.")
                             _connectionState.value = ConnectionState.ConnectedGroupOwner
-                            audioBridge.setMyOriginId(0)
+                            setMyOriginId(0)
                             udpDataPlane.startGroupOwner(0)
                             audioBridge.start()
                         }
@@ -90,7 +129,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
                             if (_connectionState.value != ConnectionState.ConnectedGroupOwner) {
                                 Log.d(TAG, "P2P Connected as GO. Transitioning to ConnectedGroupOwner.")
                                 _connectionState.value = ConnectionState.ConnectedGroupOwner
-                                audioBridge.setMyOriginId(0)
+                                setMyOriginId(0)
                                 udpDataPlane.startGroupOwner(0)
                                 audioBridge.start()
                             }
@@ -120,8 +159,8 @@ class PeerSyncEngine private constructor(private val context: Context) {
         ) { success, error ->
             isTcpConnecting = false
             if (success) {
-                val assignedId = tcpControlPlane.sessionInfo.value?.members?.find { it.deviceName == myDeviceName }?.originId ?: 1
-                audioBridge.setMyOriginId(assignedId)
+                val assignedId = resolveMyOriginId(tcpControlPlane.sessionInfo.value)
+                setMyOriginId(assignedId)
                 udpDataPlane.startClient(assignedId, goIp)
                 audioBridge.start()
                 _connectionState.value = ConnectionState.ConnectedClient
@@ -137,6 +176,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
             tcpControlPlane.incomingMessages.collect { msg ->
                 when (msg) {
                     is ControlMessage.MemberListUpdate -> {
+                        setMyOriginId(resolveMyOriginId(msg.sessionInfo))
                         val members = msg.sessionInfo.members
                         members.forEach { peer ->
                             if (!peer.isGroupOwner && peer.ipAddress.isNotBlank()) {
@@ -153,12 +193,29 @@ class PeerSyncEngine private constructor(private val context: Context) {
         }
     }
 
+    private fun observeMediaHostOwnership() {
+        scope.launch {
+            combine(
+                sessionInfo.map { it?.mediaHostId }.distinctUntilChanged(),
+                myOriginId
+            ) { hostId, myId ->
+                hostId == myId
+            }
+                .distinctUntilChanged()
+                .collect { amHost ->
+                    if (!amHost) {
+                        mediaHostManager.stopPlayback()
+                    }
+                }
+        }
+    }
+
     private fun observeGoLossEvents() {
         scope.launch {
             tcpControlPlane.goLossEvent.collect { highestOriginId ->
-                val myOriginId = tcpControlPlane.sessionInfo.value?.members?.find { it.deviceName == myDeviceName }?.originId ?: -1
-                if (myOriginId == highestOriginId) {
-                    Log.i(TAG, "GO loss detected! This device (ID $myOriginId) is highest remaining ID. Re-electing as GO...")
+                val myId = _myOriginId.value
+                if (myId == highestOriginId) {
+                    Log.i(TAG, "GO loss detected! This device (ID $myId) is highest remaining ID. Re-electing as GO...")
                     reElectAsGroupOwner()
                 } else {
                     Log.i(TAG, "GO loss detected! ID $highestOriginId elected. Reconnecting as client...")
@@ -171,7 +228,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
     private fun observeAudioBridgeOutgoingFrames() {
         scope.launch {
             audioBridge.outgoingFrames.collect { frame ->
-                val myId = tcpControlPlane.sessionInfo.value?.members?.find { it.deviceName == myDeviceName }?.originId ?: 0
+                val myId = _myOriginId.value
                 val header = AudioPacketHeader(
                     originId = myId,
                     payloadFlag = frame.flag,
@@ -195,6 +252,13 @@ class PeerSyncEngine private constructor(private val context: Context) {
                     Log.i(TAG, "AUDIO FLOW: first incoming UDP packet (originId=${packet.header.originId}, flag=${packet.header.payloadFlag}, bytes=${packet.payload.size})")
                 }
                 incomingPackets.incrementAndGet()
+
+                // Drop packets that originated from this device — the host already
+                // loopbacks music directly in the MediaHostManager lambda, and voice
+                // self-echo is filtered in C++. Filtering here prevents double-play
+                // when the GO echoes our own packets back to us.
+                if (packet.header.originId == _myOriginId.value) return@collect
+
                 audioBridge.feedReceivedPacket(
                     originId = packet.header.originId,
                     flag = packet.header.payloadFlag,
@@ -233,6 +297,11 @@ class PeerSyncEngine private constructor(private val context: Context) {
     fun startDiscovery() {
         _connectionState.value = ConnectionState.Discovering
         wifiP2pController.startDiscovery()
+    }
+
+    fun rescan() {
+        _connectionState.value = ConnectionState.Discovering
+        wifiP2pController.rescan()
     }
 
     fun createSession(sessionName: String, localDeviceName: String) {
@@ -284,13 +353,49 @@ class PeerSyncEngine private constructor(private val context: Context) {
         audioBridge.setMicMuted(muted)
     }
 
+    fun setPeerVolume(originId: Byte, volume: Float) {
+        val newMap = _peerVolumes.value.toMutableMap()
+        newMap[originId] = volume
+        _peerVolumes.value = newMap
+        audioBridge.setPeerVolume(originId, volume)
+    }
+
     fun setAudioRoute(route: AudioRoute) {
         _audioRoute.value = route
         audioBridge.setAudioRoute(route)
     }
 
+    fun requestMediaHost() {
+        val myId = _myOriginId.value
+        if (sessionInfo.value?.mediaHostId == myId) {
+            return
+        }
+        tcpControlPlane.requestMediaHost(myId)
+    }
+
+    fun selectAndPlayMusicFolder(uri: Uri) {
+        if (sessionInfo.value?.mediaHostId == _myOriginId.value) {
+            mediaHostManager.selectAndPlayFolder(uri)
+        }
+    }
+
+    fun handleMediaAction(action: MediaAction) {
+        val myId = _myOriginId.value
+        if (sessionInfo.value?.mediaHostId != myId) {
+            return
+        }
+        val message = ControlMessage.MediaControl(action, myId)
+        if (_connectionState.value == ConnectionState.ConnectedGroupOwner) {
+            tcpControlPlane.broadcastMessage(message)
+        } else {
+            tcpControlPlane.sendMessage(message)
+        }
+        mediaHostManager.handleMediaAction(action)
+    }
+
     fun disconnect() {
         isTcpConnecting = false
+        mediaHostManager.stopPlayback(clearPlaylist = true)
         audioBridge.stop()
         tcpControlPlane.stop()
         udpDataPlane.stop()
@@ -298,5 +403,11 @@ class PeerSyncEngine private constructor(private val context: Context) {
         PeerSyncService.stopService(context)
         _connectionState.value = ConnectionState.Disconnected
         startDiscovery()
+    }
+
+    private fun setMyOriginId(originId: Byte) {
+        _myOriginId.value = originId
+        audioBridge.setMyOriginId(originId)
+        mediaHostManager.setOriginId(originId)
     }
 }

@@ -204,13 +204,35 @@ class TcpControlPlane {
             membersList.addAll(connectedClients.values.map { it.peerDevice })
         }
 
-        val updatedInfo = currentInfo.copy(members = membersList)
+        val activeHostId = currentInfo.mediaHostId
+        val hostStillPresent = activeHostId != null && membersList.any { it.originId == activeHostId }
+        val updatedInfo = currentInfo.copy(
+            members = membersList,
+            mediaHostId = if (hostStillPresent) activeHostId else null
+        )
         _sessionInfo.value = updatedInfo
         val memberListMsg = ControlMessage.MemberListUpdate(updatedInfo)
         broadcastMessage(memberListMsg)
         // Also emit locally so the GO's PeerSyncEngine.observeControlPlaneMessages()
         // can populate udpDataPlane.clientIpMap with client IPs for outbound UDP.
         scope.launch { _incomingMessages.emit(memberListMsg) }
+    }
+
+    fun requestMediaHost(requestingId: Byte) {
+        val currentInfo = _sessionInfo.value ?: return
+        if (currentInfo.mediaHostId == requestingId) {
+            return
+        }
+        
+        if (serverSocket != null) { // I am GO
+            val updatedInfo = currentInfo.copy(mediaHostId = requestingId)
+            _sessionInfo.value = updatedInfo
+            val memberListMsg = ControlMessage.MemberListUpdate(updatedInfo)
+            broadcastMessage(memberListMsg)
+            scope.launch { _incomingMessages.emit(memberListMsg) }
+        } else { // I am Client
+            sendMessage(ControlMessage.MediaTokenRequest(requestingId))
+        }
     }
 
     fun broadcastMessage(message: ControlMessage) {
@@ -415,8 +437,20 @@ class TcpControlPlane {
                         val msg = json.decodeFromString<ControlMessage>(line)
 
                         when (msg) {
+                            is ControlMessage.MediaTokenRequest -> {
+                                val currentInfo = _sessionInfo.value
+                                if (currentInfo != null) {
+                                    if (currentInfo.mediaHostId == msg.requestingOriginId) {
+                                        continue
+                                    }
+                                    val updatedInfo = currentInfo.copy(mediaHostId = msg.requestingOriginId)
+                                    _sessionInfo.value = updatedInfo
+                                    val memberListMsg = ControlMessage.MemberListUpdate(updatedInfo)
+                                    broadcastMessage(memberListMsg)
+                                    scope.launch { _incomingMessages.emit(memberListMsg) }
+                                }
+                            }
                             is ControlMessage.MediaControl,
-                            is ControlMessage.MediaTokenRequest,
                             is ControlMessage.MediaTokenGrant -> {
                                 broadcastMessage(msg)
                             }

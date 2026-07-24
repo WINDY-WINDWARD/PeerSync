@@ -14,28 +14,39 @@ fun PeerSyncNavGraph(
     connectionState: ConnectionState,
     discoveredSessions: List<DiscoveredSession>,
     sessionInfo: SessionInfo?,
+    myOriginId: Byte,
     isMicMuted: Boolean,
     audioRoute: AudioRoute,
+    peerVolumes: Map<Byte, Float>,
     onCreateSession: (String) -> Unit,
     onJoinSession: (DiscoveredSession, String) -> Unit,
     onDisconnect: () -> Unit,
     onMediaControl: (MediaAction) -> Unit,
     onRequestMediaHost: () -> Unit,
+    onSelectMusicRequest: () -> Unit,
     onToggleMicMute: (Boolean) -> Unit,
-    onSelectAudioRoute: (AudioRoute) -> Unit
+    onSelectAudioRoute: (AudioRoute) -> Unit,
+    onSetPeerVolume: (Byte, Float) -> Unit,
+    onVolumeStep: () -> Unit,
+    onRescan: () -> Unit
 ) {
     when (connectionState) {
         ConnectionState.ConnectedGroupOwner, ConnectionState.ConnectedClient -> {
             ActiveSessionScreen(
                 sessionInfo = sessionInfo,
                 isGroupOwner = connectionState == ConnectionState.ConnectedGroupOwner,
+                myOriginId = myOriginId,
                 isMicMuted = isMicMuted,
                 audioRoute = audioRoute,
+                peerVolumes = peerVolumes,
                 onDisconnect = onDisconnect,
                 onMediaControl = onMediaControl,
                 onRequestMediaHost = onRequestMediaHost,
+                onSelectMusicRequest = onSelectMusicRequest,
                 onToggleMicMute = onToggleMicMute,
-                onSelectAudioRoute = onSelectAudioRoute
+                onSelectAudioRoute = onSelectAudioRoute,
+                onSetPeerVolume = onSetPeerVolume,
+                onVolumeStep = onVolumeStep
             )
         }
         else -> {
@@ -43,7 +54,8 @@ fun PeerSyncNavGraph(
                 discoveredSessions = discoveredSessions,
                 connectionState = connectionState,
                 onCreateSession = onCreateSession,
-                onJoinSession = onJoinSession
+                onJoinSession = onJoinSession,
+                onRescan = onRescan
             )
         }
     }

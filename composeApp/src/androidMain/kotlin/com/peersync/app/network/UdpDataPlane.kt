@@ -22,6 +22,8 @@ class UdpDataPlane {
     companion object {
         private const val TAG = "UdpDataPlane"
         const val UDP_PORT = 8889
+        // Receive buffer: must be >= header (4) + max music payload (1392) = 1396.
+        // Use 1500 to also accommodate future voice packets and keep alignment.
         private const val MAX_PACKET_SIZE = 1500
     }
 

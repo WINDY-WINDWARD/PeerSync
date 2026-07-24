@@ -6,6 +6,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -23,7 +25,8 @@ fun SessionListScreen(
     discoveredSessions: List<DiscoveredSession>,
     connectionState: ConnectionState,
     onCreateSession: (sessionName: String) -> Unit,
-    onJoinSession: (session: DiscoveredSession, pin: String) -> Unit
+    onJoinSession: (session: DiscoveredSession, pin: String) -> Unit,
+    onRescan: () -> Unit
 ) {
     var showCreateDialog by remember { mutableStateOf(false) }
     var selectedSession by remember { mutableStateOf<DiscoveredSession?>(null) }
@@ -70,12 +73,20 @@ fun SessionListScreen(
                 }
             }
 
-            Text(
-                text = "Discovered Sessions",
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(bottom = 8.dp)
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Discovered Sessions",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                IconButton(onClick = onRescan) {
+                    Icon(imageVector = Icons.Default.Refresh, contentDescription = "Rescan")
+                }
+            }
 
             if (discoveredSessions.isEmpty()) {
                 Box(

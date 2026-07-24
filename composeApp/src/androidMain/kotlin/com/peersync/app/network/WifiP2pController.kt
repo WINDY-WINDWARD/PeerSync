@@ -276,6 +276,19 @@ class WifiP2pController(private val context: Context) {
     }
 
     @SuppressLint("MissingPermission")
+    fun rescan() {
+        sessionsMap.clear()
+        _discoveredSessions.value = emptyList()
+        stopDiscovery()
+        channel?.let { ch ->
+            p2pManager?.clearServiceRequests(ch, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() = startDiscovery()
+                override fun onFailure(reason: Int) = startDiscovery()
+            })
+        } ?: startDiscovery()
+    }
+
+    @SuppressLint("MissingPermission")
     fun connectToPeerAddress(deviceAddressStr: String) {
         isClientConnection = true
         val config = WifiP2pConfig().apply {
