@@ -11,12 +11,13 @@
 This document specifies the functional, non-functional, and architectural requirements for "PeerSync Intercom", a decentralized, offline, full-duplex (free talk) communication and audio-streaming application built exclusively for Android. 
 
 ### 1.2 Scope
-The system enables a minimum of five (5) Android devices to communicate simultaneously in real-time over an ad-hoc local network without requiring cellular data, internet access, or external routers. Additionally, the system allows any single connected device to act as a media host, broadcasting high-fidelity music to all participants while maintaining an open voice intercom channel.
+The system enables a minimum of five (5) Android devices to communicate simultaneously in real-time over an ad-hoc local network without requiring cellular data, internet access, or external routers. Additionally, the session creator (Group Owner) can broadcast high-fidelity music to all participants while maintaining an open voice intercom channel. Music playback and media controls are available to all peers but controlled exclusively by the Group Owner.
 
 ### 1.3 Key Concepts & Definitions
 * **Full-Duplex (Free Talk):** Continuous, bidirectional audio streaming where all participants can speak and hear each other simultaneously without pressing buttons.
-* **Group Owner (GO):** The central Android node in a Wi-Fi Direct network that acts as the virtual access point and DHCP server.
-* **Client Spoke:** A peer Android device connected to the Group Owner.
+* **Group Owner (GO):** The Android device that creates a session. The GO manages session state, relays audio streams, and holds exclusive media playback control.
+* **Client Spoke:** A peer Android device that joins an existing session hosted by the Group Owner.
+* **Media Host:** Deprecated term. Media playback and control are now exclusively managed by the Group Owner (session creator).
 * **Audio Ducking:** Automatically lowering the background music volume on a device when active human speech is detected on the network.
 * **Jitter Buffer:** A localized memory buffer that reorders and aligns incoming network packets before playback to eliminate choppy audio.
 
@@ -24,16 +25,18 @@ The system enables a minimum of five (5) Android devices to communicate simultan
 
 ## 2. System Architecture & Network Topology
 
-### 2.1 Network Model: Local Star Topology
-The system operates exclusively via **Wi-Fi Direct (Wi-Fi P2P)** arranged in a Hub-and-Spoke structure.
-* **The Hub:** One dynamically elected or manually selected Android device instantiates the network as the Wi-Fi P2P Group Owner (GO).
-* **The Spokes:** Up to 4 (or more) Android Client devices connect to the GO. All communication routes through the GO to minimize point-to-point wireless interference.
-* **Bandwidth Overhead:** Pure Bluetooth (Classic or BLE) is strictly avoided for the primary network backbone due to its architectural throughput limits when handling 5 simultaneous full-duplex voice streams plus high-fidelity music.
+### 2.1 Network Model: Local Star Topology via Google Nearby Connections API
+The system operates via the **Google Nearby Connections API** using a Hub-and-Spoke structure with the P2P_CLUSTER strategy.
+* **The Hub (GO):** The session creator becomes the Group Owner (GO) and manages the network group. The GO receives all audio streams from connected peers, relays them to all other participants, and controls media playback.
+* **The Spokes:** Client devices discover and connect to the GO's advertised session. All audio and control traffic flows through the GO via the Nearby Connections API, minimizing point-to-point wireless interference.
+* **Bandwidth Efficiency:** The Nearby Connections API intelligently selects the best available transport (Wi-Fi Direct, Bluetooth, or other local mechanisms) based on device capabilities and signal conditions. Pure Bluetooth is avoided where possible to handle 5+ simultaneous full-duplex voice streams plus high-fidelity music.
 
 ### 2.2 Dual-Plane Network Architecture
-To optimize latency and system stability, network traffic is segregated into two parallel logical planes:
-* **The Control Plane (TCP):** Manages session state, connection handshakes, routing table updates, active member lists, and media controls (Play/Pause/Skip synchronization signals).
-* **The Data Plane (UDP):** Dedicated to high-speed, stateless streaming of audio bytes. If packet loss occurs due to range limitations, the system discards the lost frames and plays the next chronological packet to prevent voice lag.
+To optimize latency and system stability, network traffic is logically segregated into two concurrent planes over the Nearby Connections API:
+* **The Control Plane:** Manages session state, connection handshakes, member list updates, media playback controls (Play/Pause/Skip), and heartbeat signals.
+* **The Data Plane:** Dedicated to high-speed, stateless streaming of audio bytes. Audio frames are transmitted as individual packets with headers identifying source and payload type. If packet loss occurs due to range limitations, the system discards the lost frames and plays the next chronological packet to prevent voice lag.
+
+Both planes utilize the underlying Nearby Connections API, which abstracts the transport layer (Wi-Fi Direct, Bluetooth, or other mechanisms) to ensure reliable, low-latency delivery suitable for real-time audio communication.
 
 ┌──────────────────────┐
 │  Group Owner (Hub)   │
@@ -60,9 +63,9 @@ To optimize latency and system stability, network traffic is segregated into two
 ## 3. Functional Requirements
 
 ### 3.1 Peer Discovery & Session Management (F-01)
-* **Autonomous Discovery:** The system must utilize Wi-Fi Direct Network Service Discovery (NSD) to broadcast a custom, encrypted cryptographic service token unique to this application.
-* **Automatic Pairing:** Devices running the app must scan for this specific token in the background and display found sessions cleanly. No manual typing of IP or MAC addresses is permitted.
-* **Network Resilience & Handover:** If a Client Spoke disconnects, the rest of the group conversation must remain uninterrupted. If the Group Owner drops unexpectedly, the remaining clients must execute a silent background negotiation protocol to elect a new Group Owner and re-establish the socket plane.
+* **Autonomous Discovery:** The system utilizes the Google Nearby Connections API to discover and advertise PeerSync sessions. The session creator (GO) advertises a unique, encrypted service with a custom endpoint identifier. Discovering devices scan for active PeerSync advertisements and display found sessions without requiring manual IP entry.
+* **Automatic Pairing:** Devices running the app must present a 6-digit numeric PIN to join a session. The PIN is validated by the GO before the device is added to the active member list.
+* **Network Resilience & Handover:** If a Client Spoke disconnects, the rest of the group conversation must remain uninterrupted. If the Group Owner disconnects unexpectedly, the remaining clients must execute a silent background election protocol to promote the highest-ranked remaining client to Group Owner. The new GO re-advertises the session, and all clients reconnect with the same session PIN.
 
 ### 3.2 Full-Duplex Audio Engine (F-02)
 * **Always-On Open Mic:** Sockets must remain continuously open for all connected users, enabling hands-free operation resembling a physical helmet intercom or a traditional phone call.
@@ -70,13 +73,14 @@ To optimize latency and system stability, network traffic is segregated into two
 * **Acoustic Management Integration:** The system must intercept audio at the hardware abstraction layer using communication-priority pipelines. This forces the device's Digital Signal Processor (DSP) to apply native Acoustic Echo Cancellation (AEC), Automatic Gain Control (AGC), and background Noise Suppression to completely eliminate audio feedback when speakers are used without headphones.
 
 ### 3.3 Dual-Stream Mixing & Media Sharing (F-03)
-* **Media Broadcast Ownership:** Any single peer on the network can request and receive the "Media Host" token to share music. 
-* **Audio Split Processing:** The Media Host must not merge microphone input and music files into a single network payload. Instead, it must compress and stream them as separate structural pipelines to preserve audio fidelity.
-* **Packet Structure Specifications:** Every outgoing packet over the UDP Data Plane must contain a 4-byte header consisting of:
+* **Media Broadcast Ownership:** Only the Group Owner (session creator) can broadcast music to all participants. Music is selected via the Android Storage Access Framework (SAF) file picker and streamed to all connected peers.
+* **Audio Split Processing:** The Group Owner must not merge microphone input and music files into a single network payload. Instead, it must compress and stream them as separate structural pipelines to preserve audio fidelity. Voice stream remains at 16kHz Mono; music stream is at 44.1kHz Stereo.
+* **Packet Structure Specifications:** Every outgoing packet over the Data Plane must contain a 4-byte header consisting of:
   1. *User Origin ID* (1 byte: identifies the speaking/sharing device)
-  2. *Payload Flag* (`0x01` for Voice optimized at 16kHz Mono; `0x02` for Music optimized at 44.1kHz Stereo)
+  2. *Payload Flag* (`0x00` = Keep-Alive heartbeat, `0x01` for Voice optimized at 16kHz Mono; `0x02` for Music optimized at 44.1kHz Stereo)
   3. *Sequence Index* (2 bytes: tracks chronological alignment)
-* **Client-Side Summing & Ducking:** Receiving devices must run incoming packets through a digital mixer module. When the payload flag changes to `0x01` (active human speech), the mixer must automatically apply **Audio Ducking**—lowering the volume of the `0x02` music stream by a pre-set percentage—and restore music volume once speech halts.
+* **Client-Side Summing & Ducking:** Receiving devices run incoming packets through a digital mixer module. When the payload flag changes to `0x01` (active human speech), the mixer must automatically apply **Audio Ducking**—lowering the volume of the `0x02` music stream by a pre-set percentage—and restore music volume once speech halts.
+* **Group Owner Playback Controls:** The GO (or any peer on behalf of the GO) can control music playback (Play/Pause/Skip) via control messages. These commands are relayed to all peers to keep playback synchronized.
 
 ---
 
@@ -102,9 +106,9 @@ To optimize latency and system stability, network traffic is segregated into two
 
 | Test Case ID | Feature Tested | Verification Condition | Expected Result |
 | :--- | :--- | :--- | :--- |
-| **TC-01** | Multi-Peer Capacity | Connect 5 Android devices via Wi-Fi P2P. | Group Owner maps 4 distinct client IPs. All 5 mics stream concurrently without dropped sockets. |
-| **TC-02** | Audio Ducking | Play a local MP3 file from Device A while User B begins speaking. | Receiving devices decode the Voice header packet, immediately attenuating the Music output level by 60%. |
-| **TC-03** | System Persistence | Lock the device screen on 3 out of 5 connected client phones. | Foreground service retains wake-locks; Wi-Fi Direct antennas remain fully active; voice feed continues. |
+| **TC-01** | Multi-Peer Capacity | Connect 5 Android devices via Nearby Connections API. | Group Owner maps 4 distinct client connections. All 5 mics stream concurrently without dropped connections. |
+| **TC-02** | Audio Ducking | Group Owner plays a local MP3 file while User B begins speaking. | Receiving devices decode the Voice header packet, immediately attenuating the Music output level by 60%. |
+| **TC-03** | System Persistence | Lock the device screen on 3 out of 5 connected client phones. | Foreground service retains wake-locks; Nearby Connections remain fully active; voice feed continues. |
 
 ### 5.2 Recommended Structural References
 Developers working on this implementation should model their system loops after the following conceptual models:

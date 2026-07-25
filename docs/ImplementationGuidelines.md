@@ -16,14 +16,11 @@ All magic numbers are defined here. No hardcoded literals in source code — ref
 
 | Constant | Value | Notes |
 | :--- | :--- | :--- |
-| `TCP_PORT` | `8730` | Control Plane TCP server port on GO |
-| `UDP_PORT` | `8731` | Data Plane UDP port (send & receive) |
-| `GO_IP` | `192.168.49.1` | Standard Wi-Fi Direct GO IP address |
-| `NSD_SERVICE_TYPE` | `"_peersync._tcp"` | Bonjour/NSD service type string |
-| `NSD_SERVICE_NAME` | `"PeerSync"` | NSD service name broadcast by GO |
+| `NEARBY_SERVICE_ID` | `"com.peersync.app"` | Service ID for Nearby Connections API |
+| `NEARBY_STRATEGY` | `Strategy.P2P_CLUSTER` | Nearby Connections strategy for multi-peer support |
 | `GO_HEARTBEAT_INTERVAL_MS` | `2000` | GO sends heartbeat every 2 seconds |
 | `GO_HEARTBEAT_TIMEOUT_MS` | `5000` | Client declares GO loss after 5 seconds of silence |
-| `NTP_SYNC_INTERVAL_MS` | `5000` | GO broadcasts clock sync every 5 seconds |
+| `CLOCK_SYNC_INTERVAL_MS` | `5000` | GO broadcasts clock sync every 5 seconds |
 | `MAX_PEERS` | `5` | Maximum peers including GO (GO + 4 clients) |
 
 ### 1.2 Security Constants
@@ -33,8 +30,8 @@ All magic numbers are defined here. No hardcoded literals in source code — ref
 | `PIN_LENGTH` | `6` | 6-digit numeric PIN |
 | `MAX_PIN_ATTEMPTS` | `3` | Lock out after 3 failures |
 | `PIN_COOLDOWN_MS` | `30000` | 30-second cooldown after lockout |
-| `NSD_TOKEN_ALGO` | `"HmacSHA256"` | Algorithm for NSD session token (SRS §3.1) |
-| `NSD_NONCE_BYTES` | `16` | Random nonce length for session token generation |
+| `SESSION_TOKEN_ALGO` | `"HmacSHA256"` | Algorithm for session token encryption |
+| `SESSION_TOKEN_NONCE_BYTES` | `16` | Random nonce length for token generation |
 
 ### 1.3 Audio Constants
 
@@ -63,6 +60,16 @@ All magic numbers are defined here. No hardcoded literals in source code — ref
 | `DUCK_HOLD_MS` | `300` | Hold ducked state for 300ms after last voice packet |
 | `VAD_AGGRESSIVENESS_DEFAULT` | `2` | WebRTC VAD aggressiveness (0–3) |
 | `MAX_MUSIC_DRIFT_MS` | `50` | Maximum tolerated music sync drift |
+
+### 1.5 Audio Routing & Volume Constants
+
+| Constant | Value | Notes |
+| :--- | :--- | :--- |
+| `LOCAL_MUSIC_GAIN_MIN` | `0.0f` | Minimum music volume for GO local playback |
+| `LOCAL_MUSIC_GAIN_DEFAULT` | `1.0f` | Default (100%) music volume for GO local playback |
+| `LOCAL_MUSIC_GAIN_MAX` | `3.0f` | Maximum (300%) software boost for GO music |
+| `AUDIO_ROUTE_REASSERT_DELAY_MS` | `300` | Delay before re-asserting audio route after stream start |
+| `PREFERRED_AUDIO_ROUTES` | `[BLUETOOTH, SPEAKER]` | Preferred audio output order (avoid earpiece lock-in) |
 
 ---
 
@@ -124,11 +131,11 @@ PeerSync/
         │   │   └── security/
         │   │       └── PinManager.kt        # PIN generation, validation, rate limiting
         │   │
-        │   └── cpp/
-        │       ├── CMakeLists.txt           # Build config: Oboe, libopus, libwebrtc_vad
-        │       ├── jni_bridge.cpp           # JNI exported functions
-        │       ├── audio_engine.h / .cpp    # Oboe streams: capture + playback
-        │       ├── opus_codec.h / .cpp      # Opus encoder/decoder (voice + music)
+         │   └── cpp/
+         │       ├── CMakeLists.txt           # Build config: AAudio, libopus, libwebrtc_vad
+         │       ├── jni_bridge.cpp           # JNI exported functions
+         │       ├── audio_engine.h / .cpp    # AAudio capture + playback, mixing
+         │       ├── opus_codec.h / .cpp      # Opus encoder/decoder (voice + music)
         │       ├── ring_buffer.h / .cpp     # Lock-free SPSC ring buffer
         │       ├── webrtc_vad.h / .cpp      # WebRTC VAD wrapper
         │       ├── jitter_buffer.h / .cpp   # Fixed-depth reorder buffer
@@ -303,16 +310,13 @@ flowchart TD
 ```mermaid
 flowchart TD
     A["User taps\n'Create Session'"] --> B["Generate 6-digit PIN"]
-    B --> C["Create Wi-Fi P2P Group\n(become GO)"]
-    C --> D["Start NSD Service\n(broadcast _peersync._tcp)"]
-    D --> E["Start TCP Server\n(listen on port 8730)"]
-    E --> F["Start UDP Listener\n(port 8731)"]
-    F --> G["Start Foreground Service\n+ Acquire WAKE_LOCK"]
-    G --> H["Navigate to\nActive Session Screen"]
-    H --> I["Display PIN on screen\nShow 'Waiting for peers...'"]
-    I --> J["Start GO Heartbeat Loop\n(every 2s)"]
-    J --> K["Start NTP Sync Loop\n(every 5s)"]
-    K --> L["Start Audio Capture\n(Oboe, 16kHz Mono)"]
+    B --> C["Advertise session\nvia Nearby Connections API"]
+    C --> D["Start Foreground Service\n+ Acquire WAKE_LOCK"]
+    D --> E["Navigate to\nActive Session Screen"]
+    E --> F["Display PIN on screen\nShow 'Waiting for peers...'"]
+    F --> G["Start GO Heartbeat Loop\n(every 2s)"]
+    G --> H["Start Clock Sync Loop\n(every 5s)"]
+    H --> I["Start Audio Capture\n(AAudio, 16kHz Mono)"]
 ```
 
 ### 4.3 Join Session Flow (Become Client)
@@ -322,57 +326,54 @@ flowchart TD
     A["User sees session\nin Session List"] --> B["User taps session"]
     B --> C["Show PIN Entry Dialog"]
     C --> D["User enters\n6-digit PIN"]
-    D --> E["Connect Wi-Fi Direct\nto GO's P2P Group"]
-    E --> F["Open TCP connection\nto GO at 192.168.49.1:8730"]
-    F --> G["Send JOIN_REQUEST\nwith PIN + deviceName"]
-    G --> H{"GO response?"}
-    H -- "JOIN_RESPONSE\naccepted=true" --> I["Store assigned\nUser Origin ID"]
-    I --> J["Store member list\n+ media host state"]
-    J --> K["Open UDP socket\n(port 8731)"]
-    K --> L["Start Audio Capture\n(Oboe, 16kHz Mono)"]
-    L --> M["Navigate to\nActive Session Screen"]
-    M --> N["Start GO\nHeartbeat Monitor"]
-    H -- "JOIN_RESPONSE\naccepted=false" --> O["Show 'Invalid PIN'\nerror"]
-    O --> P{"Attempts\n< 3?"}
-    P -- Yes --> C
-    P -- No --> Q["Show 'Too many attempts.\nWait 30 seconds.'"]
-    Q --> R["Wait 30s\ncooldown"]
-    R --> C
+    D --> E["Connect via\nNearby Connections API"]
+    E --> F["Send JOIN_REQUEST\nwith PIN + deviceName"]
+    F --> G{"GO validates\nPIN?"}
+    G -- "Accepted" --> H["Receive assigned\nUser Origin ID"]
+    H --> I["Store member list\nand peer info"]
+    I --> J["Start Foreground Service\n+ Acquire WAKE_LOCK"]
+    J --> K["Start Audio Capture\n(AAudio, 16kHz Mono)"]
+    K --> L["Navigate to\nActive Session Screen"]
+    L --> M["Start GO\nHeartbeat Monitor"]
+    G -- "Rejected" --> N["Show 'Invalid PIN'\nerror"]
+    N --> O{"Attempts\n< 3?"}
+    O -- Yes --> C
+    O -- No --> P["Show 'Too many attempts.\nWait 30 seconds.'"]
+    P --> Q["Wait 30s\ncooldown"]
+    Q --> C
 ```
 
 ### 4.4 Active Voice Communication Flow
 
 ```mermaid
 flowchart TD
-    A["Oboe captures\n20ms audio frame"] --> B["DSP processes:\nAEC → AGC → NS"]
+    A["AAudio captures\n20ms audio frame"] --> B["DSP processes:\nAEC → AGC → NS"]
     B --> C["WebRTC VAD\nanalyzes frame"]
     C --> D{"Speech\ndetected?"}
     D -- Yes --> E["Opus encode\n(VOIP, 16kHz Mono)"]
-    E --> F["Build UDP packet:\nHeader(myId, 0x01, seq++) + payload"]
-    F --> G["Send UDP to GO\n(192.168.49.1:8731)"]
+    E --> F["Build Nearby packet:\nHeader(myId, 0x01, seq++) + payload"]
+    F --> G["Send via Nearby\nConnections to GO"]
     D -- No --> H{"500ms since\nlast packet?"}
     H -- Yes --> I["Send Keep-Alive:\nHeader(myId, 0x00, seq++)"]
     I --> G
     H -- No --> J["Skip\n(wait for next frame)"]
 ```
 
-### 4.5 Music Sharing Flow (Media Host)
+### 4.5 Music Sharing Flow (Group Owner Only)
+
+Only the Group Owner (session creator) can share music. The GO opens the Android SAF file picker to select a music file, then streams it to all connected peers.
 
 ```mermaid
 flowchart TD
-    A["User taps\n'Share Music'"] --> B["Send MEDIA_HOST_REQUEST\nvia TCP to GO"]
-    B --> C{"GO grants token?\n(no current host)"}
-    C -- Yes --> D["Receive MEDIA_HOST_GRANT\n(hostId = self)"]
-    D --> E["Open Android SAF\nFile Picker"]
-    E --> F["User selects\naudio file"]
-    F --> G["Decode file to PCM\n(MediaCodec / FFmpeg)"]
-    G --> H["Opus encode\n(Audio, 44.1kHz Stereo)"]
-    H --> I["Build UDP packet:\nHeader(myId, 0x02, musicSeq++)"]
-    I --> J["Send UDP to GO\n(forwarded to all)"]
-    J --> K{"EOF reached?"}
-    K -- No --> G
-    K -- Yes --> L["Send MEDIA_HOST_RELEASE\nvia TCP"]
-    C -- "No (another host\nalready active)" --> M["Show toast:\n'Music is already\nbeing shared'"]
+    A["GO taps\n'Select Music'"] --> B["Open Android SAF\nFile Picker"]
+    B --> C["User selects\naudio file"]
+    C --> D["Decode file to PCM\n(MediaCodec / FFmpeg)"]
+    D --> E["Opus encode\n(Audio, 44.1kHz Stereo)"]
+    E --> F["Build packet:\nHeader(id=0, 0x02, musicSeq++)"]
+    F --> G["Send via Nearby\nConnections to all"]
+    G --> H{"EOF reached?"}
+    H -- No --> D
+    H -- Yes --> I["Music playback\nends"]
 ```
 
 ### 4.6 Disconnect Flow
@@ -380,53 +381,67 @@ flowchart TD
 ```mermaid
 flowchart TD
     A["User taps\n'Disconnect'"] --> B["Stop audio\ncapture + playback"]
-    B --> C["Close UDP socket"]
-    C --> D["Close TCP connection"]
-    D --> E["Disconnect Wi-Fi P2P"]
-    E --> F["Stop Foreground Service\n+ Release WAKE_LOCK"]
-    F --> G["Navigate to\nSession List Screen"]
-    G --> H{"Was I the GO?"}
-    H -- Yes --> I["Clients detect\nheartbeat timeout"]
+    B --> C["Close Nearby\nConnections"]
+    C --> D["Disconnect from session"]
+    D --> E["Stop Foreground Service\n+ Release WAKE_LOCK"]
+    E --> F["Navigate to\nSession List Screen"]
+    F --> G{"Was I the GO?"}
+    H -- Yes --> I["Peers detect\nheartbeat timeout"]
     I --> J["Failover protocol\ntriggers"]
-    H -- No --> K["GO receives\nTCP disconnect"]
+    G -- No --> K["GO receives\ndisconnect"]
     K --> L["GO sends\nMEMBER_LEFT to all"]
-```
+---
+
+## 4.7 Audio Routing & Output Management
+
+The system manages audio output routing to prevent earpiece lock-in and ensure proper speaker selection based on device state. This is handled by `AudioBridge.applyAudioRoute()`.
+
+**Routing Priority:**
+1. **Bluetooth Audio Device Present:** Route to Bluetooth (e.g., headset, car audio).
+2. **Wired Audio Device Present:** Route to wired headphones.
+3. **Default:** Route to loudspeaker (NOT earpiece).
+4. **Fallback:** Use system default if explicit routing fails.
+
+**Route Re-assertion:**
+- Applied immediately on session start.
+- Re-applied with a 300ms delay after audio stream starts (bypasses OEM routing policy race conditions).
+- Re-applied if audio device connects/disconnects during active session.
+
+**Music Volume Boost (Group Owner Only):**
+- Host music playback amplitude is controlled via `setLocalMusicVolume(gain: Float)` where `gain ∈ [0.0, 3.0]`.
+- Default value: `1.0f` (100%).
+- Maximum boost: `3.0f` (300%) for situations where music is too quiet on the device speaker.
+- Boost is applied in the native C++ mixer before playback to avoid clipping artifacts.
 
 ---
 
 ## 5. Sequence Diagrams
 
-### 5.1 Session Creation & Peer Join
+### 5.1 Session Creation & Peer Join (Nearby Connections API)
 
 ```mermaid
 sequenceDiagram
     participant GO as Group Owner
-    participant NSD as NSD Service
+    participant Nearby as Nearby API
     participant C1 as Client 1
 
-    GO->>GO: createWifiP2pGroup()
-    GO->>NSD: registerService("_peersync._tcp")
-    GO->>GO: startTcpServer(port=8730)
+    GO->>Nearby: advertiseSession(serviceId, pin)
+    Nearby-->>GO: sessionAdvertised(endpointId)
     GO->>GO: generatePin() → "482901"
 
     Note over GO: Waiting for peers...
 
-    C1->>NSD: discoverServices("_peersync._tcp")
-    NSD-->>C1: serviceFound(GO address)
-    C1->>GO: connectWifiP2p(GO address)
-    GO-->>C1: P2P Connected (IP assigned via DHCP)
-
-    C1->>GO: TCP connect → 192.168.49.1:8730
-    C1->>GO: JOIN_REQUEST { pin: "482901", deviceName: "Pixel 8" }
+    C1->>Nearby: startDiscovery(serviceId)
+    Nearby-->>C1: sessionFound(endpointId, GO device)
+    C1->>Nearby: connectToSession(endpointId, pin)
+    Nearby->>GO: connectionRequest(C1 endpointId)
 
     GO->>GO: validatePin("482901") ✓
     GO->>GO: assignId(1)
-    GO-->>C1: JOIN_RESPONSE { accepted: true, assignedId: 1, members: [GO], mediaHostId: null }
+    GO->>Nearby: acceptConnection(C1 endpointId)
+    Nearby-->>C1: connected
 
-    GO->>GO: Broadcast to all existing clients:
-    Note over GO: (no other clients yet)
-
-    C1->>C1: openUdpSocket(port=8731)
+    GO->>C1: MEMBER_LIST_UPDATE [GO=0, C1=1]
     C1->>C1: startAudioCapture()
     C1->>C1: startHeartbeatMonitor()
 
@@ -445,27 +460,27 @@ sequenceDiagram
 
     Note over C1: User speaks into mic
 
-    C1N->>C1N: Oboe captures 20ms frame (320 samples @ 16kHz)
+    C1N->>C1N: AAudio captures 20ms frame (320 samples @ 16kHz)
     C1N->>C1N: AEC → AGC → NS processing
     C1N->>C1N: WebRTC VAD → speech=true
     C1N->>C1N: Opus encode (VOIP) → ~70 bytes
     C1N->>C1N: Write to send ring buffer
 
-    C1->>GO: UDP [0x01, 0x01, seq=42] + opus_payload
-    Note over GO: GO receives packet, reads header
+    C1->>GO: Nearby [originId=1, flag=0x01, seq=42] + opus_payload
+    Note over GO: GO receives packet, forwards to all peers
 
     GO->>GO: Forward to all clients except C1
-    GO->>C2: UDP [0x01, 0x01, seq=42] + opus_payload
+    GO->>C2: Nearby [originId=1, flag=0x01, seq=42] + opus_payload
     Note over GO: GO also forwards to its own playback pipeline
 
-    C2->>C2N: Received UDP packet
+    C2->>C2N: Received audio packet
     C2N->>C2N: Parse header → jitter_buffer[origin=1, flag=0x01].insert(seq=42)
     C2N->>C2N: Jitter buffer ready (depth=3 reached)
     C2N->>C2N: Pop oldest → Opus decode → 320 PCM samples
     C2N->>C2N: Mixer: sum with other voice streams
     C2N->>C2N: Ducking: voice detected → attenuate music to 40%
     C2N->>C2N: Write mixed PCM to playback ring buffer
-    C2N->>C2N: Oboe playback callback reads ring buffer → speaker
+    C2N->>C2N: AAudio playback callback reads ring buffer → speaker
 ```
 
 ### 5.3 GO Failover & Re-election
@@ -491,58 +506,50 @@ sequenceDiagram
 
     Note over C1,C3: Each client independently evaluates:<br/>Remaining IDs = {1, 2, 3}<br/>Highest ID = 3 → Client 3 is new GO
 
-    C3->>C3: createWifiP2pGroup()
-    C3->>C3: startTcpServer(port=8730)
-    C3->>C3: registerNsdService() (same PIN)
-    Note over C3: New GO is now ID 0
+    C3->>C3: advertiseSession(serviceId, pin)
+    Note over C3: New GO now has ID 0
 
-    C1->>C3: discoverServices() → found new group
-    C1->>C3: connectWifiP2p()
-    C1->>C3: TCP JOIN_REQUEST { pin: "482901" }
+    C1->>C3: discoverServices() → found new session
+    C1->>C3: connectToSession(pin="482901")
     C3-->>C1: JOIN_RESPONSE { accepted: true, assignedId: 1 }
 
-    C2->>C3: connectWifiP2p()
-    C2->>C3: TCP JOIN_REQUEST { pin: "482901" }
+    C2->>C3: connectToSession(pin="482901")
     C3-->>C2: JOIN_RESPONSE { accepted: true, assignedId: 2 }
 
     Note over C1,C3: Voice channel restored.<br/>Total downtime: ~8–12 seconds
 ```
 
-### 5.4 Music Streaming & Ducking
+### 5.4 Music Streaming & Ducking (Group Owner Only)
 
 ```mermaid
 sequenceDiagram
-    participant MH as Media Host (C2)
-    participant GO as Group Owner
+    participant GO as Group Owner (ID 0)
     participant C1 as Client 1
+    participant C2 as Client 2
 
-    MH->>GO: TCP MEDIA_HOST_REQUEST { requesterId: 2 }
-    GO->>GO: No current host → grant
-    GO->>MH: TCP MEDIA_HOST_GRANT { hostId: 2 }
-    GO->>C1: TCP MEDIA_HOST_GRANT { hostId: 2 }
-
-    MH->>MH: SAF picker → user selects song.mp3
-    MH->>MH: MediaCodec decode → PCM (44.1kHz Stereo)
-    MH->>MH: Opus encode (Audio mode) → ~240 bytes
+    GO->>GO: SAF picker → user selects song.mp3
+    GO->>GO: MediaCodec decode → PCM (44.1kHz Stereo)
+    GO->>GO: Opus encode (Audio mode) → ~240 bytes
 
     loop Every 20ms
-        MH->>GO: UDP [originId=2, flag=MUSIC, musicSeq++] + opus_music
-        GO->>C1: Forward UDP [originId=2, flag=MUSIC, musicSeq] + opus_music
+        GO->>GO: Nearby [originId=0, flag=MUSIC, musicSeq++]
+        GO->>C1: Forward [originId=0, flag=MUSIC] + opus_music
+        GO->>C2: Forward [originId=0, flag=MUSIC] + opus_music
         GO->>GO: Play locally (GO also hears music)
     end
 
-    Note over C1: C1 is playing music at full volume
+    Note over C1,C2: Both peers are playing music at full volume
 
-    Note over MH: Media Host also speaks
+    Note over GO: GO also speaks
 
-    MH->>GO: UDP [originId=2, flag=VOICE, voiceSeq++] + opus_voice
-    GO->>C1: Forward UDP [originId=2, flag=VOICE, voiceSeq]
+    GO->>C1: Nearby [originId=0, flag=VOICE, voiceSeq++] + opus_voice
+    GO->>C2: Nearby [originId=0, flag=VOICE, voiceSeq++] + opus_voice
 
-    Note over C1: C1's mixer detects flag=0x01 (voice)
+    Note over C1: C1's mixer detects flag=0x01 (voice from GO)
     C1->>C1: Duck music: 100% → 40% over 50ms
     Note over C1: Voice plays at full volume over ducked music
 
-    Note over MH: Media Host stops speaking (VAD → silence)
+    Note over GO: GO stops speaking (VAD → silence)
 
     Note over C1: No voice packets for 300ms (DUCK_HOLD_MS)
     C1->>C1: Restore music: 40% → 100% over 250ms
@@ -578,16 +585,17 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant C1 as Client 1
-    participant GO as Group Owner
-    participant MH as Media Host (C2)
+    participant GO as Group Owner (ID 0)
+    participant C2 as Client 2
     participant C3 as Client 3
 
-    C1->>GO: TCP MEDIA_CONTROL { action: "PAUSE", senderId: 1 }
-    GO->>MH: TCP MEDIA_CONTROL { action: "PAUSE", senderId: 1 }
-    GO->>C1: TCP MEDIA_CONTROL { action: "PAUSE", senderId: 1 }
-    GO->>C3: TCP MEDIA_CONTROL { action: "PAUSE", senderId: 1 }
+    C1->>GO: MEDIA_CONTROL { action: "PAUSE", senderId: 1 }
+    GO->>GO: Pause music playback (local)
+    GO->>C1: MEDIA_CONTROL { action: "PAUSE", senderId: 1 }
+    GO->>C2: MEDIA_CONTROL { action: "PAUSE", senderId: 1 }
+    GO->>C3: MEDIA_CONTROL { action: "PAUSE", senderId: 1 }
 
-    MH->>MH: Pause music decode + streaming
+    GO->>GO: Pause music decode + streaming
     Note over C1,C3: All peers update UI: "Paused by Client 1"
 ```
 
@@ -641,23 +649,22 @@ stateDiagram-v2
     }
 ```
 
-### 6.3 Media Host State Machine
+### 6.3 Group Owner Music Playback State Machine
+
+Only the Group Owner can broadcast music. This state machine applies when the GO has selected a music file for playback.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> NoHost
-
-    NoHost --> Requested : user taps "Share Music"
-    Requested --> Hosting : MEDIA_HOST_GRANT received
-    Requested --> NoHost : request denied (another host exists)
-    Hosting --> FileSelection : open SAF picker
+    [*] --> Idle
+    
+    Idle --> FileSelection : GO taps "Select Music"
+    FileSelection --> Idle : picker cancelled
     FileSelection --> Streaming : file selected
-    FileSelection --> Hosting : picker cancelled
-    Streaming --> Hosting : song finished (EOF)
-    Streaming --> Hosting : SKIP received
-    Hosting --> NoHost : user releases / disconnects
-    Hosting --> NoHost : MEDIA_HOST_RELEASE sent
-
+    Streaming --> Paused : PAUSE command
+    Streaming --> Idle : song finished (EOF) or STOP
+    Paused --> Streaming : PLAY command
+    Paused --> Idle : STOP command or disconnect
+    
     state Streaming {
         [*] --> Decoding
         Decoding --> Encoding : PCM frames ready
@@ -700,101 +707,70 @@ The central coordinator in `androidMain`. The ViewModels communicate with it.
 // engine/PeerSyncEngine.kt
 class PeerSyncEngine(
     private val context: Context,
-    private val wifiP2p: WifiP2pController,
-    private val tcpPlane: TcpControlPlane,
-    private val udpPlane: UdpDataPlane,
+    private val nearbyController: NearbyController,
     private val audioBridge: AudioBridge,
+    private val mediaHostManager: MediaHostManager,
     private val pinManager: PinManager
 ) {
     // --- Observable State ---
     val connectionState: StateFlow<ConnectionState>
     val peers: StateFlow<List<PeerDevice>>
     val discoveredSessions: StateFlow<List<SessionInfo>>
-    val mediaHostId: StateFlow<Int?>
+    val isGroupOwner: StateFlow<Boolean>
     val selfId: StateFlow<Int>                  // This device's User Origin ID
     val audioLevels: StateFlow<Map<Int, Float>> // Per-peer audio levels (0.0–1.0)
-    val musicPlaybackState: StateFlow<MusicPlaybackState> // PLAYING, PAUSED, STOPPED
+    val musicPlaybackState: StateFlow<MusicPlaybackState> // PLAYING, PAUSED, STOPPED (GO only)
 
     // --- Session Lifecycle ---
     suspend fun startDiscovery()
     suspend fun stopDiscovery()
-    suspend fun createSession(): String          // Returns the generated PIN
+    suspend fun createSession(): String          // Returns the generated PIN (caller becomes GO)
     suspend fun joinSession(deviceAddress: String, pin: String): Result<Unit>
     suspend fun disconnect()
 
-    // --- Media Host ---
-    suspend fun requestMediaHost()
-    suspend fun releaseMediaHost()
-    suspend fun selectMusicFile(uri: Uri)        // Called after SAF picker returns
-    suspend fun sendMediaControl(action: MediaAction)
+    // --- Media Control (Group Owner Only) ---
+    suspend fun selectMusicFile(uri: Uri)        // Called after SAF picker returns (GO only)
+    suspend fun sendMediaControl(action: MediaAction) // All peers can send Play/Pause/Skip
 
     // --- Settings ---
     fun setVadSensitivity(level: Int)            // 0–3 (WebRTC aggressiveness)
+    fun setLocalMusicVolume(volume: Float)       // 0.0–3.0 for GO music playback boost
 }
 ```
 
-### 7.2 WifiP2pController
+### 7.2 NearbyController (Network Abstraction)
+
+Manages all peer discovery, connection establishment, and message transmission via Google Nearby Connections API.
 
 ```kotlin
-// network/WifiP2pController.kt
-class WifiP2pController(private val context: Context) {
+// network/NearbyController.kt
+class NearbyController(private val context: Context) {
     val discoveredSessions: StateFlow<List<SessionInfo>>
-    val groupInfo: StateFlow<WifiP2pGroup?>
-
-    suspend fun startDiscovery()                          // Register NSD listener
-    suspend fun stopDiscovery()                           // Unregister NSD listener
-    suspend fun createGroup(): WifiP2pGroup               // Become GO
-    suspend fun connect(deviceAddress: String): WifiP2pInfo // Connect to GO
-    suspend fun disconnect()                              // Remove group / disconnect
-    fun registerNsdService(serviceName: String, sessionToken: String) // GO broadcasts NSD with HMAC token in TXT record
-    fun unregisterNsdService()
-}
-```
-
-### 7.3 TcpControlPlane
-
-```kotlin
-// network/TcpControlPlane.kt
-class TcpControlPlane {
-    val incomingMessages: SharedFlow<Pair<Int, ControlMessage>> // (peerId, message)
-
-    // --- GO Mode ---
-    suspend fun startServer(port: Int = TCP_PORT)
-    fun stopServer()
-    suspend fun sendToClient(clientId: Int, message: ControlMessage)
-    suspend fun broadcastToAll(message: ControlMessage)
-    suspend fun broadcastToAllExcept(excludeId: Int, message: ControlMessage)
-
-    // --- Client Mode ---
-    suspend fun connectToGo(host: String, port: Int = TCP_PORT)
-    suspend fun sendToGo(message: ControlMessage)
-    fun disconnect()
-
-    // --- Shared ---
-    fun getConnectedClientIds(): Set<Int>
-}
-```
-
-### 7.4 UdpDataPlane
-
-```kotlin
-// network/UdpDataPlane.kt
-class UdpDataPlane {
-    // --- Lifecycle ---
-    fun start(port: Int = UDP_PORT)
-    fun stop()
-
-    // --- Sending ---
-    fun sendPacket(targetIp: String, header: AudioPacketHeader, payload: ByteArray)
-    fun broadcastToAll(clientIps: Map<Int, String>, excludeId: Int, header: AudioPacketHeader, payload: ByteArray)
-
-    // --- Receiving ---
-    // Callback invoked on the network IO thread; must be fast
-    var onPacketReceived: ((senderIp: String, header: AudioPacketHeader, payload: ByteArray) -> Unit)?
-
-    // --- GO Forwarding ---
-    // Called by PeerSyncEngine when running as GO
-    fun forwardPacket(clientIps: Map<Int, String>, excludeOriginId: Int, rawPacket: ByteArray)
+    val connectionState: StateFlow<ConnectionState>
+    
+    // --- Discovery & Session Creation ---
+    suspend fun startDiscovery()                          // Begin scanning for nearby sessions
+    suspend fun stopDiscovery()                           // Stop scanning
+    suspend fun advertiseSession(pin: String): String    // Become GO; returns session endpoint ID
+    suspend fun stopAdvertising()                         // Stop advertising (GO disconnect)
+    
+    // --- Connection ---
+    suspend fun connectToSession(endpointId: String, pin: String): Result<Unit>  // Join a session
+    suspend fun disconnect()                              // Leave session
+    
+    // --- Message Transmission ---
+    val incomingMessages: SharedFlow<Pair<Int, ControlMessage>> // (originId, message)
+    suspend fun sendMessage(message: ControlMessage)      // Send via control channel
+    suspend fun broadcastMessage(message: ControlMessage) // Broadcast to all peers (GO only)
+    
+    // --- Audio Data Streaming ---
+    val incomingAudioPackets: SharedFlow<Pair<Int, ByteArray>> // (originId, audioData)
+    suspend fun sendAudioPacket(header: AudioPacketHeader, payload: ByteArray)
+    suspend fun broadcastAudioPacket(header: AudioPacketHeader, payload: ByteArray)
+    
+    // --- Peer Management ---
+    fun getConnectedPeerIds(): Set<Int>
+    fun isGroupOwner(): Boolean
 }
 ```
 
@@ -824,9 +800,13 @@ class AudioBridge {
     // --- Receive Path (called from Kotlin network threads) ---
     external fun feedReceivedPacket(originId: Int, payloadFlag: Int, opusPayload: ByteArray)
 
-    // --- Music (called from MediaHostManager) ---
+    // --- Music (called from MediaHostManager, GO only) ---
     external fun feedMusicPcm(pcmSamples: ShortArray, sampleRate: Int, channels: Int)
     external fun getEncodedMusicFrame(): ByteArray?
+    external fun setLocalMusicGain(gain: Float)       // 0.0–3.0 software boost for GO playback
+    
+    // --- Audio Routing (communicates with native audio path) ---
+    fun applyAudioRoute(route: AudioRoute, source: String) // Explicit routing management
 
     companion object {
         init { System.loadLibrary("peersync_audio") }
@@ -866,40 +846,37 @@ flowchart LR
     end
 
     subgraph IOPool ["Coroutine IO Dispatchers"]
-        TCP_R["TCP Read Loop"]
-        TCP_W["TCP Write"]
-        UDP_R["UDP Read Loop"]
-        UDP_W["UDP Send"]
-        NSD_D["NSD Discovery"]
+        Nearby_IO["Nearby Connection\nCallbacks"]
+        Nearby_D["Nearby Discovery"]
     end
 
-    subgraph NativeThreads ["Native C++ Threads (Oboe-managed)"]
+    subgraph NativeThreads ["Native C++ Threads (AAudio-managed)"]
         CaptureThread["Audio Capture\nCallback Thread"]
         PlaybackThread["Audio Playback\nCallback Thread"]
     end
 
     subgraph Worker ["Background Workers"]
         HeartbeatLoop["Heartbeat Timer\n(2s interval)"]
-        NtpLoop["NTP Sync Timer\n(5s interval)"]
+        ClockSync["Clock Sync Timer\n(5s interval)"]
         KeepaliveLoop["Keepalive Timer\n(500ms when silent)"]
-        MusicDecode["Music Decode\nThread"]
+        MusicDecode["Music Decode\nThread (GO only)"]
     end
 
     ViewModel <-->|"StateFlow"| IOPool
-    UDP_R -->|"feedReceivedPacket()"| PlaybackThread
-    CaptureThread -->|"getEncodedVoiceFrame()"| UDP_W
+    Nearby_IO -->|"feedReceivedPacket()"| PlaybackThread
+    CaptureThread -->|"getEncodedVoiceFrame()"| Nearby_IO
     MusicDecode -->|"feedMusicPcm()"| CaptureThread
 ```
 
 ### Threading Rules
 
-1. **Oboe audio callbacks** run on high-priority real-time threads managed by Oboe. **Never block** in these callbacks — no locks, no allocations, no JNI calls from within the callback itself. Use lock-free ring buffers to pass data in/out.
+1. **AAudio audio callbacks** run on high-priority real-time threads managed by AAudio. **Never block** in these callbacks — no locks, no allocations, no JNI calls from within the callback itself. Use lock-free ring buffers to pass data in/out.
 
-2. **UDP read loop** runs on a dedicated `Dispatchers.IO` coroutine. On packet arrival, it immediately calls `AudioBridge.feedReceivedPacket()` which writes to the native receive ring buffer. This must complete in < 1ms.
+2. **Nearby Connection callbacks** are invoked on dedicated I/O threads by the Nearby Connections API. On audio packet arrival, they immediately call `AudioBridge.feedReceivedPacket()` which writes to the native receive ring buffer. This must complete in < 1ms.
 
-3. **TCP read loop** runs on a dedicated `Dispatchers.IO` coroutine per connected client (GO mode) or a single coroutine (client mode). Incoming messages are parsed and emitted to `SharedFlow`.
+3. **Nearby message callbacks** receive control messages and emit them to `SharedFlow` for processing by background workers or the engine.
 
-4. **Music decode thread** is a dedicated Kotlin coroutine on `Dispatchers.Default`. It reads from the content URI, decodes via `MediaCodec`, and feeds PCM to `AudioBridge.feedMusicPcm()`.
+4. **Music decode thread** is a dedicated Kotlin coroutine on `Dispatchers.Default` (GO only). It reads from the content URI, decodes via `MediaCodec`, and feeds PCM to `AudioBridge.feedMusicPcm()`.
 
 5. **ViewModels** observe `StateFlow` on `Dispatchers.Main`. All UI state is derived from the engine's state flows.
 
@@ -935,7 +912,8 @@ private:
 
 ```cpp
 // audio_engine.h
-class AudioEngine : public oboe::AudioStreamDataCallback {
+// Direct AAudio interface for low-latency capture and playback
+class AudioEngine {
 public:
     void initialize(int32_t voiceSampleRate, int32_t musicSampleRate);
     void destroy();
@@ -945,17 +923,18 @@ public:
     void startPlayback();
     void stopPlayback();
 
-    // Oboe callbacks (called on real-time thread)
-    oboe::DataCallbackResult onAudioReady(
-        oboe::AudioStream* stream, void* audioData, int32_t numFrames) override;
-
+    // AAudio callbacks (called on real-time thread by AAudio)
+    // Data flows via ring buffers to avoid blocking
+    
     // Inter-thread data exchange via ring buffers
     RingBuffer<int16_t> captureRingBuffer;    // Capture thread → JNI read
     RingBuffer<int16_t> playbackRingBuffer;   // JNI write → Playback thread
+    RingBuffer<int16_t> musicRingBuffer;      // Music decode → mixer input
 
 private:
-    std::shared_ptr<oboe::AudioStream> captureStream_;
-    std::shared_ptr<oboe::AudioStream> playbackStream_;
+    AAudioStream* captureStream_;
+    AAudioStream* playbackStream_;
+    // AAudio stream properties and configuration
 };
 ```
 
@@ -1083,9 +1062,8 @@ private:
 cmake_minimum_required(VERSION 3.22)
 project(peersync_audio)
 
-# Oboe
-set(OBOE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/oboe)
-add_subdirectory(${OBOE_DIR} oboe)
+# AAudio (included in Android NDK)
+find_library(AAUDIO_LIB aaudio)
 
 # Opus (pre-built or build from source)
 add_library(opus STATIC IMPORTED)
@@ -1113,7 +1091,7 @@ add_library(peersync_audio SHARED
     webrtc_vad.cpp)
 
 target_link_libraries(peersync_audio
-    oboe
+    ${AAUDIO_LIB}
     opus
     webrtc_vad
     android
@@ -1128,17 +1106,17 @@ target_link_libraries(peersync_audio
 
 | Scenario | Detection | Recovery |
 | :--- | :--- | :--- |
-| TCP connection lost (client) | `SocketException` in read loop | Attempt reconnect 3× with 2s backoff. If all fail, trigger GO failover detection. |
-| TCP connection lost (GO side) | `SocketException` in per-client read loop | Remove client from member list, broadcast `MEMBER_LEFT`. |
-| UDP send fails | `IOException` from `DatagramSocket.send()` | Log and skip. UDP is fire-and-forget. |
-| Wi-Fi Direct group destroyed | `WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION` broadcast | Trigger full disconnect → Session List. |
-| NSD discovery fails | `WifiP2pManager.WIFI_P2P_DISCOVERY_CHANGED_ACTION` with state=STOPPED | Retry `discoverServices()` after 3s. Max 5 retries. |
+| Nearby Connection lost (client) | Nearby Connections API callback | Attempt reconnect 3× with 2s backoff. If all fail, trigger GO failover detection. |
+| Nearby Connection lost (GO side) | Nearby Connections API callback | Remove peer from member list, broadcast `MEMBER_LEFT`. |
+| Nearby message send fails | Exception from `sendMessage()` | Log and skip. Messages are fire-and-forget. |
+| Nearby Connections unavailable | `ConnectionsClient` initialization fails | Show error: "Nearby connections unavailable on this device." Disable app. |
+| Peer discovery fails | No peers discovered after 10s scan | Retry discovery after 3s. Max 5 retries. |
 
 ### 10.2 Audio Errors
 
 | Scenario | Detection | Recovery |
 | :--- | :--- | :--- |
-| Oboe stream disconnected | `onErrorAfterClose()` callback | Re-create the stream with same parameters. Oboe handles device routing changes. |
+| AAudio stream error | AAudio stream state = ERROR | Re-create the stream with same parameters. AAudio handles device routing changes. |
 | Opus encode returns error | Negative return from `opus_encode()` | Log error code. Skip this frame (20ms gap). |
 | Opus decode returns error | Negative return from `opus_decode()` | Use Opus PLC (Packet Loss Concealment): call `opus_decode(NULL, 0, ...)` to generate a comfort frame. |
 | Ring buffer overflow | `write()` returns false | Drop the oldest data (overwrite). Log as warning. |
@@ -1158,11 +1136,12 @@ target_link_libraries(peersync_audio
 | Scenario | Behavior |
 | :--- | :--- |
 | 6th device tries to join (MAX_PEERS exceeded) | GO sends `JOIN_RESPONSE { accepted: false, reason: "Session full" }`. |
-| Two devices request Media Host simultaneously | GO processes requests serially (TCP is ordered). First request wins; second gets denied. |
-| Media Host disconnects while streaming | GO broadcasts `MEMBER_LEFT` + `MEDIA_HOST_GRANT { hostId: null }`. Music stops on all clients. |
+| GO attempts to select music while already streaming | User can stop current music and start a new file. No multi-queue support. |
+| GO disconnects while streaming music | All clients stop receiving music packets. Music playback stops locally. |
 | Sequence index wraps (65535 → 0) | Jitter buffer uses modular arithmetic for comparisons: `(a - b) > 32768` means `a < b`. |
 | Phone call interrupts audio | `AudioManager.OnAudioFocusChangeListener` detects transient loss. Pause capture, resume when focus returns. |
-| Bluetooth headset connects mid-session | Oboe handles device routing changes automatically via `onErrorAfterClose()` + stream restart. |
+| Bluetooth headset connects mid-session | AAudio stream detects device change. Re-assertion logic applies preferred routing (Bluetooth prioritized). |
+
 
 ---
 
@@ -1267,7 +1246,7 @@ android-application = { id = "com.android.application", version.ref = "agp" }
 
 | Library | Version | Purpose | Integration |
 | :--- | :--- | :--- | :--- |
-| **Oboe** | 1.9.x | Audio I/O (wraps AAudio) | Git submodule → `add_subdirectory()` |
+| **AAudio** | NDK 21+ | Audio I/O (low-latency) | Included in Android NDK → `find_library(aaudio)` |
 | **libopus** | 1.5.x | Opus encode/decode | Pre-built `.a` per ABI or build from source |
 | **WebRTC VAD** | Extracted from WebRTC M120+ | Voice activity detection | Vendored C source files (~5 files) |
 

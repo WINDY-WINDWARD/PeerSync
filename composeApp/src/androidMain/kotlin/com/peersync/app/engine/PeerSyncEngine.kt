@@ -7,12 +7,15 @@ import android.util.Log
 import com.peersync.app.model.*
 import com.peersync.app.network.*
 import com.peersync.app.security.PinManager
+import com.peersync.app.security.PinValidationResult
 import com.peersync.app.service.PeerSyncService
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
 import com.peersync.app.audio.AudioBridge
 import com.peersync.app.audio.MediaHostManager
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.random.Random
 
 class PeerSyncEngine private constructor(private val context: Context) {
 
@@ -32,9 +35,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    val wifiP2pController = WifiP2pController(context)
-    val tcpControlPlane = TcpControlPlane()
-    val udpDataPlane = UdpDataPlane()
+    val wifiSocketController = WifiSocketController(context)
     val audioBridge = AudioBridge(context)
     val mediaHostManager = MediaHostManager(context) { payload ->
         // Suspend until C++ has enough free space in the 16kHz mix buffer.
@@ -51,8 +52,11 @@ class PeerSyncEngine private constructor(private val context: Context) {
     private val _myOriginId = MutableStateFlow<Byte>(0)
     val myOriginId: StateFlow<Byte> = _myOriginId.asStateFlow()
 
-    val discoveredSessions: StateFlow<List<DiscoveredSession>> = wifiP2pController.discoveredSessions
-    val sessionInfo: StateFlow<SessionInfo?> = tcpControlPlane.sessionInfo
+    private val _discoveredSessions = MutableStateFlow<List<DiscoveredSession>>(emptyList())
+    val discoveredSessions: StateFlow<List<DiscoveredSession>> = _discoveredSessions.asStateFlow()
+    
+    private val _sessionInfo = MutableStateFlow<SessionInfo?>(null)
+    val sessionInfo: StateFlow<SessionInfo?> = _sessionInfo.asStateFlow()
 
     private val _isMicMuted = MutableStateFlow(false)
     val isMicMuted: StateFlow<Boolean> = _isMicMuted.asStateFlow()
@@ -63,29 +67,244 @@ class PeerSyncEngine private constructor(private val context: Context) {
     private val _peerVolumes = MutableStateFlow<Map<Byte, Float>>(emptyMap())
     val peerVolumes: StateFlow<Map<Byte, Float>> = _peerVolumes.asStateFlow()
 
+    private val _speedTestResult = MutableStateFlow<String>("")
+    val speedTestResult: StateFlow<String> = _speedTestResult.asStateFlow()
+
     private var myDeviceName: String = "PeerDevice"
-    private var myP2pAddress: String = java.util.UUID.randomUUID().toString()
     private var currentPin: String = ""
     private var audioSeqNum: Short = 0
+    private var activeSessionName: String = ""
+    private var activePin: String = ""
+
+    // Speed test tracking: timestamp -> payload size for calculating RTT
+    private val pendingSpeedTests = ConcurrentHashMap<Long, Int>()
+
+    // Session state management (replaces TcpControlPlane logic)
+    private var nextOriginId: Byte = 1  // Host: next ID to assign to clients
+    private var hostEndpointId: String? = null  // Client: endpoint ID of the host
+    private var isHost: Boolean = false  // Track if this device is the host
+    private val connectedClientEndpoints = mutableMapOf<String, Byte>()  // endpointId -> originId
 
     // Diagnostic frame counters (debug)
     private val outgoingFrames = java.util.concurrent.atomic.AtomicLong(0)
     private val incomingPackets = java.util.concurrent.atomic.AtomicLong(0)
     private var firstOutgoingLogged = false
     private var firstIncomingLogged = false
-    private var isTcpConnecting = false
 
     init {
-        wifiP2pController.registerReceiver()
         audioBridge.initialize()
-        observeP2pState()
+        observeNearbyState()
         observeControlPlaneMessages()
+        observeEndpointDisconnects()
         observeMediaHostOwnership()
-        observeGoLossEvents()
         observeAudioBridgeOutgoingFrames()
-        observeUdpIncomingAudioPackets()
+        observeNearbyIncomingAudioPackets()
         observeStreamErrors()
+        observeDiscoveredSessions()
         startFrameCounters()
+    }
+
+    private fun observeNearbyState() {
+        scope.launch {
+            wifiSocketController.wifiSocketState.collect { socketState ->
+                when (socketState) {
+                    is WifiSocketState.HostingP2p -> {
+                        if (_connectionState.value != ConnectionState.ConnectedGroupOwner) {
+                            Log.d(TAG, "Started hosting session: ${socketState.sessionName}")
+                            isHost = true
+                            nextOriginId = 1
+                            connectedClientEndpoints.clear()
+                            _connectionState.value = ConnectionState.ConnectedGroupOwner
+                            setMyOriginId(0)
+                            
+                            // Create initial session info with just the host
+                            val hostPeer = PeerDevice(
+                                originId = 0,
+                                deviceId = myDeviceName,  // Use device name as identifier
+                                deviceName = myDeviceName,
+                                isGroupOwner = true
+                            )
+                            _sessionInfo.value = SessionInfo(
+                                sessionName = socketState.sessionName,
+                                groupOwnerId = 0,
+                                pin = socketState.pin,
+                                saltNonce = "",
+                                members = listOf(hostPeer),
+                                mediaHostId = 0
+                            )
+                            
+                            audioBridge.start()
+                        }
+                    }
+                    is WifiSocketState.ConnectedClient -> {
+                        if (hostEndpointId == null) {
+                            Log.d(TAG, "Connected to host at: ${socketState.hostAddress}")
+                            hostEndpointId = socketState.hostAddress
+                            
+                            // Send JoinRequest with PIN to the host
+                            val joinRequest = ControlMessage.JoinRequest(
+                                deviceName = myDeviceName,
+                                deviceId = myDeviceName,  // Use device name as identifier (no mesh)
+                                pin = currentPin
+                            )
+                            wifiSocketController.broadcastControlMessage(joinRequest)
+                            Log.d(TAG, "Sent JoinRequest to host with PIN: $currentPin")
+                        }
+                    }
+                    is WifiSocketState.Error -> {
+                        Log.e(TAG, "WiFi Socket Error: ${socketState.message}")
+                    }
+                    else -> {}
+                }
+            }
+        }
+    }
+
+    private fun observeControlPlaneMessages() {
+        scope.launch {
+            wifiSocketController.incomingMessages.collect { receivedMsg ->
+                val msg = receivedMsg.message
+                val senderEndpointId = receivedMsg.senderEndpointId
+
+                when (msg) {
+                    is ControlMessage.JoinRequest -> {
+                        // Host receives JoinRequest from client (clients don't relay in star topology)
+                        if (isHost) {
+                            handleClientJoinRequest(msg, senderEndpointId)
+                        }
+                    }
+                    is ControlMessage.MemberListUpdate -> {
+                        _sessionInfo.value = msg.sessionInfo
+                        // Register endpoint-to-originId mappings from the session info
+                        msg.sessionInfo.members.forEach { peer ->
+                            wifiSocketController.registerEndpointOriginId(peer.deviceId, peer.originId)
+                        }
+                        setMyOriginId(resolveMyOriginId(msg.sessionInfo))
+                    }
+                    is ControlMessage.DisconnectNotice -> {
+                        Log.d(TAG, "Peer disconnected: originId=${msg.leavingOriginId}")
+                    }
+                    is ControlMessage.JoinResponse -> {
+                        // Check if this response is for us
+                        if (msg.targetDeviceId == myDeviceName && msg.success && msg.assignedOriginId != null) {
+                            Log.d(TAG, "Join successful! Assigned originId: ${msg.assignedOriginId}")
+                            setMyOriginId(msg.assignedOriginId)
+                            _connectionState.value = ConnectionState.ConnectedClient
+                            audioBridge.start()
+                        } else if (msg.targetDeviceId != myDeviceName) {
+                            Log.d(TAG, "JoinResponse not for us, ignoring (target=${msg.targetDeviceId}, mine=$myDeviceName)")
+                        } else {
+                            Log.e(TAG, "Join failed: ${msg.errorMessage}")
+                            disconnect()
+                        }
+                    }
+                    is ControlMessage.MediaTokenRequest -> {
+                        // Host grants or denies media hosting permission
+                        if (isHost) {
+                            val requestingOriginId = msg.requestingOriginId
+                            val currentSession = _sessionInfo.value
+                            if (currentSession != null) {
+                                Log.d(TAG, "Received media hosting request from originId=$requestingOriginId")
+                                // Update session with new media host
+                                val updatedSession = currentSession.copy(mediaHostId = requestingOriginId)
+                                _sessionInfo.value = updatedSession
+                                // Broadcast updated session to all clients
+                                val memberListMsg = ControlMessage.MemberListUpdate(updatedSession)
+                                wifiSocketController.broadcastControlMessage(memberListMsg)
+                            }
+                        }
+                    }
+                    is ControlMessage.SpeedTestPing -> {
+                        Log.d(TAG, "Received SpeedTestPing from originId=${msg.senderOriginId}, timestamp=${msg.timestamp}")
+                        // Immediately reply with SpeedTestPong
+                        val pong = ControlMessage.SpeedTestPong(
+                            senderOriginId = _myOriginId.value,
+                            originalTimestamp = msg.timestamp
+                        )
+                        // Broadcast pong to all endpoints
+                        wifiSocketController.broadcastControlMessage(pong)
+                    }
+                    is ControlMessage.SpeedTestPong -> {
+                        val rttMs = System.currentTimeMillis() - msg.originalTimestamp
+                        pendingSpeedTests.remove(msg.originalTimestamp)
+                        Log.d(TAG, "Speed test completed: Ping=${rttMs}ms")
+                        _speedTestResult.value = "Ping: ${rttMs}ms"
+                    }
+                    else -> {
+                        Log.d(TAG, "Received message type: ${msg::class.simpleName}")
+                    }
+                }
+            }
+        }
+    }
+
+    private fun handleClientJoinRequest(request: ControlMessage.JoinRequest, senderEndpointId: String) {
+        Log.d(TAG, "Host received JoinRequest from ${request.deviceName} (deviceId=${request.deviceId}) with PIN: ${request.pin}")
+        val currentSession = _sessionInfo.value ?: return
+
+        // Validate PIN
+        val validation = PinManager.validatePin(request.pin, currentSession.pin, request.deviceId)
+        when (validation) {
+            is PinValidationResult.Success -> {
+                // Assign next origin ID
+                val assignedId = synchronized(this) { nextOriginId++ }
+                val newClient = senderEndpointId
+
+                Log.d(TAG, "PIN validated! Assigning originId=$assignedId to ${request.deviceName}")
+
+                // Register the endpoint
+                wifiSocketController.registerEndpointOriginId(newClient, assignedId)
+                connectedClientEndpoints[newClient] = assignedId
+
+                // Create new peer
+                val newPeer = PeerDevice(
+                    originId = assignedId,
+                    deviceId = newClient,
+                    deviceName = request.deviceName,
+                    isGroupOwner = false
+                )
+
+                // Update session with new member
+                val updatedMembers = currentSession.members.toMutableList()
+                updatedMembers.add(newPeer)
+                val updatedSession = currentSession.copy(members = updatedMembers)
+                _sessionInfo.value = updatedSession
+
+                // Send JoinResponse to client with targetDeviceId to route to the correct device
+                val response = ControlMessage.JoinResponse(
+                    success = true,
+                    assignedOriginId = assignedId,
+                    sessionName = currentSession.sessionName,
+                    targetDeviceId = request.deviceId
+                )
+                wifiSocketController.sendControlMessage(response, newClient)
+
+                // Broadcast updated member list to all clients
+                val memberListMsg = ControlMessage.MemberListUpdate(updatedSession)
+                wifiSocketController.broadcastControlMessage(memberListMsg)
+
+                Log.d(TAG, "Sent JoinResponse and MemberListUpdate to all endpoints")
+            }
+            is PinValidationResult.InvalidPin -> {
+                Log.w(TAG, "Invalid PIN from ${request.deviceName}. Attempts remaining: ${validation.attemptsRemaining}")
+                val response = ControlMessage.JoinResponse(
+                    success = false,
+                    errorMessage = "Invalid PIN. ${validation.attemptsRemaining} attempts remaining.",
+                    targetDeviceId = request.deviceId
+                )
+                wifiSocketController.sendControlMessage(response, senderEndpointId)
+            }
+            is PinValidationResult.RateLimited -> {
+                val secs = (validation.cooldownRemainingMs / 1000) + 1
+                Log.w(TAG, "Rate limited for ${request.deviceName}. Cooldown: ${secs}s")
+                val response = ControlMessage.JoinResponse(
+                    success = false,
+                    errorMessage = "Too many failed attempts. Try again in ${secs}s.",
+                    targetDeviceId = request.deviceId
+                )
+                wifiSocketController.sendControlMessage(response, senderEndpointId)
+            }
+        }
     }
 
     private fun resolveMyOriginId(info: SessionInfo?): Byte {
@@ -94,8 +313,6 @@ class PeerSyncEngine private constructor(private val context: Context) {
         if (info.members.any { it.originId == _myOriginId.value }) {
             return _myOriginId.value
         }
-
-        info.members.firstOrNull { it.deviceAddress == myP2pAddress }?.let { return it.originId }
 
         if (info.members.size == 1) {
             return info.members.first().originId
@@ -107,89 +324,6 @@ class PeerSyncEngine private constructor(private val context: Context) {
         }
 
         return if (_connectionState.value == ConnectionState.ConnectedGroupOwner) 0 else _myOriginId.value
-    }
-
-    private fun observeP2pState() {
-        scope.launch {
-            wifiP2pController.p2pState.collect { p2pState ->
-                when (p2pState) {
-                    is P2pState.GroupCreated -> {
-                        if (_connectionState.value != ConnectionState.ConnectedGroupOwner) {
-                            Log.d(TAG, "GroupCreated received. Transitioning to ConnectedGroupOwner.")
-                            _connectionState.value = ConnectionState.ConnectedGroupOwner
-                            setMyOriginId(0)
-                            udpDataPlane.startGroupOwner(0)
-                            audioBridge.start()
-                        }
-                    }
-                    is P2pState.Connected -> {
-                        val info = p2pState.info
-                        if (info.isGroupOwner) {
-                            if (_connectionState.value != ConnectionState.ConnectedGroupOwner) {
-                                Log.d(TAG, "P2P Connected as GO. Transitioning to ConnectedGroupOwner.")
-                                _connectionState.value = ConnectionState.ConnectedGroupOwner
-                                setMyOriginId(0)
-                                udpDataPlane.startGroupOwner(0)
-                                audioBridge.start()
-                            }
-                        } else {
-                            val goIp = info.groupOwnerAddress?.hostAddress ?: "192.168.49.1"
-                            if (_connectionState.value != ConnectionState.ConnectedClient && !isTcpConnecting) {
-                                isTcpConnecting = true
-                                connectTcpToGroupOwner(goIp)
-                            }
-                        }
-                    }
-                    is P2pState.Error -> {
-                        Log.e(TAG, "P2P Error: ${p2pState.message}")
-                    }
-                    else -> {}
-                }
-            }
-        }
-    }
-
-    private fun connectTcpToGroupOwner(goIp: String) {
-        tcpControlPlane.connectToGroupOwner(
-            goIp = goIp,
-            pin = currentPin,
-            deviceName = myDeviceName,
-            p2pAddress = myP2pAddress
-        ) { success, error ->
-            isTcpConnecting = false
-            if (success) {
-                val assignedId = resolveMyOriginId(tcpControlPlane.sessionInfo.value)
-                setMyOriginId(assignedId)
-                udpDataPlane.startClient(assignedId, goIp)
-                audioBridge.start()
-                _connectionState.value = ConnectionState.ConnectedClient
-            } else {
-                Log.e(TAG, "Failed TCP join: $error")
-                disconnect()
-            }
-        }
-    }
-
-    private fun observeControlPlaneMessages() {
-        scope.launch {
-            tcpControlPlane.incomingMessages.collect { msg ->
-                when (msg) {
-                    is ControlMessage.MemberListUpdate -> {
-                        setMyOriginId(resolveMyOriginId(msg.sessionInfo))
-                        val members = msg.sessionInfo.members
-                        members.forEach { peer ->
-                            if (!peer.isGroupOwner && peer.ipAddress.isNotBlank()) {
-                                udpDataPlane.updateClientDestination(peer.originId, peer.ipAddress)
-                            }
-                        }
-                    }
-                    is ControlMessage.DisconnectNotice -> {
-                        udpDataPlane.removeClientDestination(msg.leavingOriginId)
-                    }
-                    else -> {}
-                }
-            }
-        }
     }
 
     private fun observeMediaHostOwnership() {
@@ -209,16 +343,72 @@ class PeerSyncEngine private constructor(private val context: Context) {
         }
     }
 
-    private fun observeGoLossEvents() {
+    private var lastMusicSeqIndex: UShort? = null
+
+    private fun observeEndpointDisconnects() {
         scope.launch {
-            tcpControlPlane.goLossEvent.collect { highestOriginId ->
-                val myId = _myOriginId.value
-                if (myId == highestOriginId) {
-                    Log.i(TAG, "GO loss detected! This device (ID $myId) is highest remaining ID. Re-electing as GO...")
-                    reElectAsGroupOwner()
+            wifiSocketController.endpointDisconnected.collect { endpointId ->
+                Log.d(TAG, "Endpoint disconnected: $endpointId")
+                
+                if (isHost) {
+                    // Host removes the disconnected client from member list
+                    val currentSession = _sessionInfo.value ?: return@collect
+                    val originId = connectedClientEndpoints.remove(endpointId)
+                    
+                    if (originId != null) {
+                        Log.d(TAG, "Removing client with originId=$originId from session")
+                        
+                        // Remove the member from session info
+                        val updatedMembers = currentSession.members.filter { it.originId != originId }
+                        val updatedSession = currentSession.copy(members = updatedMembers)
+                        _sessionInfo.value = updatedSession
+                        
+                        // Broadcast updated member list
+                        val memberListMsg = ControlMessage.MemberListUpdate(updatedSession)
+                        wifiSocketController.broadcastControlMessage(memberListMsg)
+                        
+                        // Emit disconnect notice
+                        val disconnectMsg = ControlMessage.DisconnectNotice(originId)
+                        wifiSocketController.broadcastControlMessage(disconnectMsg)
+                    }
                 } else {
-                    Log.i(TAG, "GO loss detected! ID $highestOriginId elected. Reconnecting as client...")
-                    _connectionState.value = ConnectionState.Reconnecting
+                    // Client got disconnected from host - Initiate Host Handoff protocol
+                    if (endpointId == hostEndpointId) {
+                        Log.w(TAG, "Host disconnected! Initiating Host Handoff protocol...")
+                        val currentSession = _sessionInfo.value
+
+                        if (currentSession != null && currentSession.members.size > 1) {
+                            // Filter out the old host to find surviving clients
+                            val survivingMembers = currentSession.members.filter { !it.isGroupOwner }
+                            // Elect the client with the lowest originId to be the new host
+                            val newHost = survivingMembers.minByOrNull { it.originId }
+                            
+                            // Temporarily stop the audio bridge and socket (but don't wipe Engine session state yet)
+                            audioBridge.stop()
+                            wifiSocketController.disconnect()
+                            
+                            if (newHost != null && newHost.originId == _myOriginId.value) {
+                                Log.i(TAG, "I have been elected as the NEW HOST. Starting hotspot...")
+                                scope.launch {
+                                    kotlinx.coroutines.delay(1000) // Brief delay to ensure sockets clear
+                                    // Re-host the network using the exact same credentials
+                                    createSession(activeSessionName, myDeviceName)
+                                }
+                            } else {
+                                Log.i(TAG, "Another device is the new host. Reconnecting shortly...")
+                                scope.launch {
+                                    _connectionState.value = ConnectionState.Connecting
+                                    kotlinx.coroutines.delay(4000) // Wait 4 seconds for the new host to spin up the AP
+                                    // Reconnect programmatically
+                                    wifiSocketController.connectToHost(activeSessionName, activePin)
+                                }
+                            }
+                        } else {
+                            // If no other members or session info is missing, just disconnect fully
+                            Log.d(TAG, "No surviving members to hand off to. Ending session.")
+                            disconnect()
+                        }
+                    }
                 }
             }
         }
@@ -238,28 +428,27 @@ class PeerSyncEngine private constructor(private val context: Context) {
                     Log.i(TAG, "AUDIO FLOW: first outgoing frame (originId=$myId, flag=${frame.flag}, bytes=${frame.payload.size})")
                 }
                 outgoingFrames.incrementAndGet()
-                udpDataPlane.sendAudioPacket(header, frame.payload)
+                wifiSocketController.sendAudioPacket(header, frame.payload)
             }
         }
     }
 
-    private var lastMusicSeqIndex: UShort? = null
-
-    private fun observeUdpIncomingAudioPackets() {
+    private fun observeNearbyIncomingAudioPackets() {
         scope.launch {
-            udpDataPlane.incomingPackets.collect { packet ->
+            wifiSocketController.incomingAudioPackets.collect { packet ->
                 if (!firstIncomingLogged) {
                     firstIncomingLogged = true
-                    Log.i(TAG, "AUDIO FLOW: first incoming UDP packet (originId=${packet.header.originId}, flag=${packet.header.payloadFlag}, bytes=${packet.payload.size})")
+                    Log.i(TAG, "AUDIO FLOW: first incoming WiFi Socket packet (originId=${packet.header.originId}, flag=${packet.header.payloadFlag}, bytes=${packet.payload.size})")
                 }
                 incomingPackets.incrementAndGet()
 
                 // Drop packets that originated from this device — the host already
                 // loopbacks music directly in the MediaHostManager lambda, and voice
                 // self-echo is filtered in C++. Filtering here prevents double-play
-                // when the GO echoes our own packets back to us.
+                // when the host echoes our own packets back to us.
                 if (packet.header.originId == _myOriginId.value) return@collect
 
+                // Check music sequence ordering
                 if (packet.header.payloadFlag == AudioPacketHeader.FLAG_MUSIC) {
                     val seq = packet.header.sequenceIndex
                     if (lastMusicSeqIndex != null) {
@@ -277,6 +466,9 @@ class PeerSyncEngine private constructor(private val context: Context) {
                     flag = packet.header.payloadFlag,
                     payload = packet.payload
                 )
+                
+                // Star topology: host automatically relays audio to other clients at socket layer
+                // Clients never relay; they only send and receive
             }
         }
     }
@@ -285,11 +477,18 @@ class PeerSyncEngine private constructor(private val context: Context) {
         scope.launch {
             audioBridge.streamErrors.collect { errorMessage ->
                 Log.e(TAG, "AUDIO ENGINE STREAM ERROR: $errorMessage — restarting audio")
-                // AAudio streams can die when the Wi-Fi Direct network interface
-                // changes (e.g. during GO re-election). Restart them automatically.
                 audioBridge.stop()
                 kotlinx.coroutines.delay(300)
                 audioBridge.start()
+            }
+        }
+    }
+
+    private fun observeDiscoveredSessions() {
+        scope.launch {
+            wifiSocketController.discoveredSessions.collect { sessions ->
+                _discoveredSessions.value = sessions
+                Log.d(TAG, "Updated discovered sessions: ${sessions.size} found")
             }
         }
     }
@@ -301,7 +500,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
                 val out = outgoingFrames.get()
                 val inc = incomingPackets.get()
                 if (out > 0 || inc > 0) {
-                    Log.i(TAG, "AUDIO FLOW: outgoing frames=$out, incoming UDP packets=$inc")
+                    Log.i(TAG, "AUDIO FLOW: outgoing frames=$out, incoming WiFi Socket packets=$inc")
                 }
             }
         }
@@ -309,56 +508,45 @@ class PeerSyncEngine private constructor(private val context: Context) {
 
     fun startDiscovery() {
         _connectionState.value = ConnectionState.Discovering
-        wifiP2pController.startDiscovery()
+        Log.d(TAG, "Starting Wi-Fi Direct session discovery")
+        wifiSocketController.startDiscovery()
     }
 
     fun rescan() {
         _connectionState.value = ConnectionState.Discovering
-        wifiP2pController.rescan()
+        Log.d(TAG, "Rescanning for Wi-Fi Direct sessions")
+        // Scan results will be handled by the discovery mechanism
     }
 
     fun createSession(sessionName: String, localDeviceName: String) {
         this.myDeviceName = localDeviceName
         val pin = PinManager.generatePin()
-        val nonce = PinManager.generateNonce()
         this.currentPin = pin
+        this.activeSessionName = sessionName
+        this.activePin = pin
         Log.i(TAG, "Created session '$sessionName' with PIN: $pin")
 
         PeerSyncService.startService(context)
         _connectionState.value = ConnectionState.Connecting
 
-        wifiP2pController.startLocalService(sessionName, pin, nonce)
-        tcpControlPlane.startServer(sessionName, pin, localDeviceName, myP2pAddress)
+        wifiSocketController.startHosting(sessionName, pin)
     }
 
     fun joinSession(session: DiscoveredSession, pin: String, localDeviceName: String) {
         this.myDeviceName = localDeviceName
         this.currentPin = pin
+        this.activeSessionName = session.deviceAddress
+        this.activePin = pin
 
         PeerSyncService.startService(context)
         _connectionState.value = ConnectionState.Connecting
-        wifiP2pController.connectToPeerAddress(session.deviceAddress)
-    }
-
-    private fun reElectAsGroupOwner() {
-        val currentSession = tcpControlPlane.sessionInfo.value
-        val sessionName = currentSession?.sessionName ?: "PeerSync Restored"
-        val pin = currentSession?.pin ?: currentPin
-        val nonce = PinManager.generateNonce()
-
-        isTcpConnecting = false
-        wifiP2pController.disconnect()
-        tcpControlPlane.stop()
-        udpDataPlane.stop()
-        audioBridge.stop()
-
-        _connectionState.value = ConnectionState.Connecting
-        wifiP2pController.startLocalService(sessionName, pin, nonce)
-        tcpControlPlane.startServer(sessionName, pin, myDeviceName, myP2pAddress)
+        
+        // WiFi Direct: connect to host by SSID (session.deviceAddress contains SSID)
+        wifiSocketController.connectToHost(sessionName = session.deviceAddress, pin = pin)
     }
 
     fun sendAudioPacket(header: AudioPacketHeader, payload: ByteArray) {
-        udpDataPlane.sendAudioPacket(header, payload)
+        wifiSocketController.sendAudioPacket(header, payload)
     }
 
     fun setMicMuted(muted: Boolean) {
@@ -387,32 +575,77 @@ class PeerSyncEngine private constructor(private val context: Context) {
         if (sessionInfo.value?.mediaHostId == myId) {
             return
         }
-        tcpControlPlane.requestMediaHost(myId)
+        
+        // If this device is the host, grant it to itself immediately
+        if (isHost) {
+            val currentSession = _sessionInfo.value
+            if (currentSession != null) {
+                Log.d(TAG, "Host self-granting media hosting permissions")
+                val updatedSession = currentSession.copy(mediaHostId = myId)
+                _sessionInfo.value = updatedSession
+                // Broadcast updated session to all clients
+                val memberListMsg = ControlMessage.MemberListUpdate(updatedSession)
+                wifiSocketController.broadcastControlMessage(memberListMsg)
+            }
+        } else {
+            // Send media token request to host (clients don't handle this directly)
+            val message = ControlMessage.MediaTokenRequest(myId)
+            wifiSocketController.broadcastControlMessage(message)
+        }
     }
 
     fun selectAndPlayMusicFolder(uri: Uri) {
-        if (_myOriginId.value == 0.toByte()) {
+        if (_myOriginId.value == sessionInfo.value?.mediaHostId) {
             mediaHostManager.selectAndPlayFolder(uri)
         }
     }
 
     fun handleMediaAction(action: MediaAction) {
-        if (_myOriginId.value == 0.toByte()) {
+        if (_myOriginId.value == sessionInfo.value?.mediaHostId) {
             mediaHostManager.handleMediaAction(action)
         }
     }
 
     fun disconnect() {
-        isTcpConnecting = false
         mediaHostManager.stopPlayback(clearPlaylist = true)
         audioBridge.stop()
-        tcpControlPlane.stop()
-        udpDataPlane.stop()
-        wifiP2pController.disconnect()
+        wifiSocketController.disconnect()
         PeerSyncService.stopService(context)
+        
+        // Reset session state
+        isHost = false
+        hostEndpointId = null
+        nextOriginId = 1
+        connectedClientEndpoints.clear()
+        
         _connectionState.value = ConnectionState.Disconnected
+        _sessionInfo.value = null
         startDiscovery()
     }
+
+     fun runSpeedTest(targetOriginId: Byte) {
+         val currentSession = _sessionInfo.value ?: return
+         val targetPeer = currentSession.members.firstOrNull { it.originId == targetOriginId } ?: return
+         
+         val timestamp = System.currentTimeMillis()
+         
+         // Track this test
+         pendingSpeedTests[timestamp] = 1  // Just track that a test is pending
+         
+         // Send speed test ping (lightweight: just timestamp)
+         val ping = ControlMessage.SpeedTestPing(
+             senderOriginId = _myOriginId.value,
+             timestamp = timestamp
+         )
+         
+         Log.d(TAG, "Starting speed test to originId=$targetOriginId with timestamp=$timestamp")
+         _speedTestResult.value = "Testing..."
+         
+         // Broadcast ping to all peers (star topology: host routes to target)
+         Log.d(TAG, "Broadcasting speed test ping via WiFi socket")
+         wifiSocketController.broadcastControlMessage(ping)
+         Log.d(TAG, "Speed test ping broadcasted successfully")
+     }
 
     private fun setMyOriginId(originId: Byte) {
         _myOriginId.value = originId

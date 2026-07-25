@@ -26,7 +26,8 @@ fun SessionListScreen(
     connectionState: ConnectionState,
     onCreateSession: (sessionName: String) -> Unit,
     onJoinSession: (session: DiscoveredSession, pin: String) -> Unit,
-    onRescan: () -> Unit
+    onRescan: () -> Unit,
+    onScanQrCodeRequest: () -> Unit = {}
 ) {
     var showCreateDialog by remember { mutableStateOf(false) }
     var selectedSession by remember { mutableStateOf<DiscoveredSession?>(null) }
@@ -83,8 +84,16 @@ fun SessionListScreen(
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold
                 )
-                IconButton(onClick = onRescan) {
-                    Icon(imageVector = Icons.Default.Refresh, contentDescription = "Rescan")
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Button(
+                        onClick = onScanQrCodeRequest,
+                        modifier = Modifier.height(40.dp)
+                    ) {
+                        Text("QR", fontSize = 12.sp)
+                    }
+                    IconButton(onClick = onRescan) {
+                        Icon(imageVector = Icons.Default.Refresh, contentDescription = "Rescan")
+                    }
                 }
             }
 
@@ -167,11 +176,11 @@ fun SessionListScreen(
             title = { Text("Join '${session.sessionName}'") },
             text = {
                 Column {
-                    Text("Enter 6-digit PIN provided by Group Owner:", fontSize = 14.sp)
+                    Text("Enter 8-digit PIN provided by Group Owner:", fontSize = 14.sp)
                     Spacer(modifier = Modifier.height(8.dp))
                     OutlinedTextField(
                         value = pinInput,
-                        onValueChange = { if (it.length <= 6) pinInput = it },
+                        onValueChange = { if (it.length <= 8) pinInput = it },
                         label = { Text("PIN") },
                         singleLine = true
                     )
@@ -185,7 +194,7 @@ fun SessionListScreen(
                         pinInput = ""
                         onJoinSession(session, pin)
                     },
-                    enabled = pinInput.length == 6
+                    enabled = pinInput.length == 8
                 ) {
                     Text("Connect")
                 }

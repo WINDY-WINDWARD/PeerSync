@@ -14,6 +14,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import com.peersync.app.engine.PeerSyncEngine
 import com.peersync.app.model.ControlMessage
 import com.peersync.app.model.DiscoveredSession
@@ -47,13 +49,42 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val qrScannerLauncher = registerForActivityResult(
+        ScanContract()
+    ) { result ->
+        result.contents?.let { qrContent ->
+            if (qrContent.startsWith("peersync://join")) {
+                try {
+                    val uri = Uri.parse(qrContent)
+                    val sessionName = uri.getQueryParameter("session") ?: return@let
+                    val pin = uri.getQueryParameter("pin") ?: return@let
+                    
+                    // Create a discovered session and join
+                    val discoveredSession = DiscoveredSession(
+                        sessionName = sessionName,
+                        deviceName = sessionName,
+                        deviceAddress = sessionName,
+                        token = "",
+                        nonce = ""
+                    )
+                    engine.joinSession(discoveredSession, pin, Build.MODEL)
+                } catch (e: Exception) {
+                    android.util.Log.e("MainActivity", "Failed to parse QR code: ${e.message}")
+                }
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         engine = PeerSyncEngine.getInstance(this)
 
         val requiredPermissions = mutableListOf(
             Manifest.permission.RECORD_AUDIO,
-            Manifest.permission.ACCESS_FINE_LOCATION
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.CHANGE_NETWORK_STATE,
+            Manifest.permission.ACCESS_NETWORK_STATE,
+            Manifest.permission.CAMERA
         ).apply {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 add(Manifest.permission.NEARBY_WIFI_DEVICES)
@@ -79,6 +110,7 @@ class MainActivity : ComponentActivity() {
             val isMicMuted by engine.isMicMuted.collectAsState()
             val audioRoute by engine.audioRoute.collectAsState()
             val peerVolumes by engine.peerVolumes.collectAsState()
+            val speedTestResult by engine.speedTestResult.collectAsState()
 
             App(
                 connectionState = connectionState,
@@ -88,6 +120,7 @@ class MainActivity : ComponentActivity() {
                 isMicMuted = isMicMuted,
                 audioRoute = audioRoute,
                 peerVolumes = peerVolumes,
+                speedTestResult = speedTestResult,
                 onCreateSession = { name ->
                     engine.createSession(name, Build.MODEL)
                 },
@@ -132,6 +165,15 @@ class MainActivity : ComponentActivity() {
                 },
                 onRescan = {
                     engine.rescan()
+                },
+                onRunSpeedTest = { originId ->
+                    engine.runSpeedTest(originId)
+                },
+                onScanQrCodeRequest = {
+                    qrScannerLauncher.launch(ScanOptions().apply {
+                        setOrientationLocked(false)
+                        setPrompt("Scan PeerSync QR Code")
+                    })
                 }
             )
         }

@@ -8,9 +8,8 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class PeerDevice(
     val originId: Byte,
-    val deviceAddress: String, // MAC or Wi-Fi Direct P2P address
+    val deviceId: String, // Nearby Connections endpoint ID (was MAC/Wi-Fi P2P address)
     val deviceName: String,
-    val ipAddress: String,
     val isGroupOwner: Boolean = false,
     val isMediaHost: Boolean = false,
     val isSpeaking: Boolean = false,

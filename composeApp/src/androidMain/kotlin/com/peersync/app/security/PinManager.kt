@@ -25,11 +25,12 @@ object PinManager {
     private val cooldownTimestampMap = mutableMapOf<String, Long>()
 
     /**
-     * Generates a 6-digit numeric PIN (e.g. "482019").
+     * Generates an 8-digit numeric PIN (e.g. "48201923").
+     * WPA2 requires at least 8 characters, so we use 8 digits for the passphrase.
      */
     fun generatePin(): String {
-        val number = secureRandom.nextInt(1_000_000)
-        return String.format("%06d", number)
+        val number = secureRandom.nextInt(100_000_000)
+        return String.format("%08d", number)
     }
 
     /**

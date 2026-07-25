@@ -18,6 +18,7 @@ fun App(
     isMicMuted: Boolean = false,
     audioRoute: AudioRoute = AudioRoute.LOUDSPEAKER,
     peerVolumes: Map<Byte, Float> = emptyMap(),
+    speedTestResult: String = "",
     onCreateSession: (sessionName: String) -> Unit = {},
     onJoinSession: (session: DiscoveredSession, pin: String) -> Unit = { _, _ -> },
     onDisconnect: () -> Unit = {},
@@ -28,7 +29,9 @@ fun App(
     onSetPeerVolume: (Byte, Float) -> Unit = { _, _ -> },
     onSetLocalMusicVolume: (Float) -> Unit = {},
     onVolumeStep: () -> Unit = {},
-    onRescan: () -> Unit = {}
+    onRescan: () -> Unit = {},
+    onRunSpeedTest: (Byte) -> Unit = {},
+    onScanQrCodeRequest: () -> Unit = {}
 ) {
     MaterialTheme {
         PeerSyncNavGraph(
@@ -39,6 +42,7 @@ fun App(
             isMicMuted = isMicMuted,
             audioRoute = audioRoute,
             peerVolumes = peerVolumes,
+            speedTestResult = speedTestResult,
             onCreateSession = onCreateSession,
             onJoinSession = onJoinSession,
             onDisconnect = onDisconnect,
@@ -49,7 +53,9 @@ fun App(
             onSetPeerVolume = onSetPeerVolume,
             onSetLocalMusicVolume = onSetLocalMusicVolume,
             onVolumeStep = onVolumeStep,
-            onRescan = onRescan
+            onRescan = onRescan,
+            onRunSpeedTest = onRunSpeedTest,
+            onScanQrCodeRequest = onScanQrCodeRequest
         )
     }
 }
