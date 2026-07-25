@@ -112,26 +112,42 @@ class PeerSyncEngine private constructor(private val context: Context) {
                         if (_connectionState.value != ConnectionState.ConnectedGroupOwner) {
                             Log.d(TAG, "Started hosting session: ${socketState.sessionName}")
                             isHost = true
-                            nextOriginId = 1
                             connectedClientEndpoints.clear()
                             _connectionState.value = ConnectionState.ConnectedGroupOwner
                             setMyOriginId(0)
                             
-                            // Create initial session info with just the host
-                            val hostPeer = PeerDevice(
-                                originId = 0,
-                                deviceId = myDeviceName,  // Use device name as identifier
-                                deviceName = myDeviceName,
-                                isGroupOwner = true
-                            )
-                            _sessionInfo.value = SessionInfo(
-                                sessionName = socketState.sessionName,
-                                groupOwnerId = 0,
-                                pin = socketState.pin,
-                                saltNonce = "",
-                                members = listOf(hostPeer),
-                                mediaHostId = 0
-                            )
+                            val existingSession = _sessionInfo.value
+                            if (existingSession != null && existingSession.members.isNotEmpty()) {
+                                // Recovery Mode: Preserve members, just update the Group Owner status
+                                Log.d(TAG, "Recovering existing session state for Host Handoff")
+                                val updatedMembers = existingSession.members.map {
+                                    if (it.originId == _myOriginId.value) it.copy(isGroupOwner = true)
+                                    else it.copy(isGroupOwner = false)
+                                }
+                                _sessionInfo.value = existingSession.copy(
+                                    groupOwnerId = _myOriginId.value,
+                                    members = updatedMembers
+                                )
+                                // Ensure new clients don't collide with existing origin IDs
+                                nextOriginId = ((updatedMembers.maxOfOrNull { it.originId } ?: 0) + 1).toByte()
+                            } else {
+                                // Brand New Session: Create initial session info with just the host
+                                nextOriginId = 1
+                                val hostPeer = PeerDevice(
+                                    originId = 0,
+                                    deviceId = myDeviceName,
+                                    deviceName = myDeviceName,
+                                    isGroupOwner = true
+                                )
+                                _sessionInfo.value = SessionInfo(
+                                    sessionName = socketState.sessionName,
+                                    groupOwnerId = 0,
+                                    pin = socketState.pin,
+                                    saltNonce = "",
+                                    members = listOf(hostPeer),
+                                    mediaHostId = 0
+                                )
+                            }
                             
                             audioBridge.start()
                         }
@@ -343,7 +359,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
         }
     }
 
-    private var lastMusicSeqIndex: UShort? = null
+    private var lastMusicSeqIndices = mutableMapOf<Byte, UShort>()
 
     private fun observeEndpointDisconnects() {
         scope.launch {
@@ -373,7 +389,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
                     }
                 } else {
                     // Client got disconnected from host - Initiate Host Handoff protocol
-                    if (endpointId == hostEndpointId) {
+                    if (endpointId == "host" || endpointId == hostEndpointId) {
                         Log.w(TAG, "Host disconnected! Initiating Host Handoff protocol...")
                         val currentSession = _sessionInfo.value
 
@@ -386,19 +402,21 @@ class PeerSyncEngine private constructor(private val context: Context) {
                             // Temporarily stop the audio bridge and socket (but don't wipe Engine session state yet)
                             audioBridge.stop()
                             wifiSocketController.disconnect()
+                            hostEndpointId = null // FIX: Clear dead host ID to allow JoinRequest on reconnect
                             
                             if (newHost != null && newHost.originId == _myOriginId.value) {
                                 Log.i(TAG, "I have been elected as the NEW HOST. Starting hotspot...")
                                 scope.launch {
                                     kotlinx.coroutines.delay(1000) // Brief delay to ensure sockets clear
-                                    // Re-host the network using the exact same credentials
-                                    createSession(activeSessionName, myDeviceName)
+                                    // Re-host the network using the EXACT cached credentials
+                                    restoreHostSession()
                                 }
                             } else {
                                 Log.i(TAG, "Another device is the new host. Reconnecting shortly...")
                                 scope.launch {
                                     _connectionState.value = ConnectionState.Connecting
-                                    kotlinx.coroutines.delay(4000) // Wait 4 seconds for the new host to spin up the AP
+                                    // Wait 10 seconds to give the new host ample time to tear down and spin up the AP
+                                    kotlinx.coroutines.delay(10000)
                                     // Reconnect programmatically
                                     wifiSocketController.connectToHost(activeSessionName, activePin)
                                 }
@@ -450,15 +468,17 @@ class PeerSyncEngine private constructor(private val context: Context) {
 
                 // Check music sequence ordering
                 if (packet.header.payloadFlag == AudioPacketHeader.FLAG_MUSIC) {
+                    val originId = packet.header.originId
                     val seq = packet.header.sequenceIndex
-                    if (lastMusicSeqIndex != null) {
-                        val diff = (seq.toInt() - lastMusicSeqIndex!!.toInt()).toShort().toInt()
+                    val lastSeq = lastMusicSeqIndices[originId]
+                    if (lastSeq != null) {
+                        val diff = (seq.toInt() - lastSeq.toInt()).toShort().toInt()
                         if (diff < 0 && diff > -30000) {
-                            // Drop out of order packet
+                            // Drop out of order packet for this specific originId
                             return@collect
                         }
                     }
-                    lastMusicSeqIndex = seq
+                    lastMusicSeqIndices[originId] = seq
                 }
 
                 audioBridge.feedReceivedPacket(
@@ -604,6 +624,14 @@ class PeerSyncEngine private constructor(private val context: Context) {
         if (_myOriginId.value == sessionInfo.value?.mediaHostId) {
             mediaHostManager.handleMediaAction(action)
         }
+    }
+
+    private fun restoreHostSession() {
+        this.currentPin = activePin
+        Log.i(TAG, "Restoring session '$activeSessionName' with cached PIN: $activePin")
+        PeerSyncService.startService(context)
+        _connectionState.value = ConnectionState.Connecting
+        wifiSocketController.startHosting(activeSessionName, activePin)
     }
 
     fun disconnect() {

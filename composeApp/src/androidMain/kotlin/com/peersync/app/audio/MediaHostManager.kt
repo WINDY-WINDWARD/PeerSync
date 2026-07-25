@@ -23,9 +23,10 @@ class MediaHostManager(
         private const val TAG = "MediaHostManager"
         private val AUDIO_EXTENSIONS = setOf("mp3", "aac", "m4a", "wav", "flac", "ogg", "opus")
 
-        // Max payload bytes per UDP datagram. Must be <= (UDP MTU - IP header - UDP header
-        // - AudioPacketHeader). Using 1392 = 348 stereo int16 frames; safe for any 1500-byte MTU.
-        private const val MAX_UDP_PAYLOAD = 1392
+        // Max payload bytes per TCP audio frame.
+        // Keeping this chunk size small (1392 = 348 stereo int16 frames) guarantees 
+        // extremely low latency through the TCP socket pipeline.
+        private const val MAX_FRAME_PAYLOAD = 1392
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
