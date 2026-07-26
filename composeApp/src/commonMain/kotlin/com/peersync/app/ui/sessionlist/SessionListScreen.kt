@@ -8,6 +8,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -27,7 +28,8 @@ fun SessionListScreen(
     onCreateSession: (sessionName: String) -> Unit,
     onJoinSession: (session: DiscoveredSession, pin: String) -> Unit,
     onRescan: () -> Unit,
-    onScanQrCodeRequest: () -> Unit = {}
+    onScanQrCodeRequest: () -> Unit = {},
+    onOpenSettings: () -> Unit = {}
 ) {
     var showCreateDialog by remember { mutableStateOf(false) }
     var selectedSession by remember { mutableStateOf<DiscoveredSession?>(null) }
@@ -38,6 +40,11 @@ fun SessionListScreen(
         topBar = {
             TopAppBar(
                 title = { Text("PeerSync Intercom", fontWeight = FontWeight.Bold) },
+                actions = {
+                    IconButton(onClick = onOpenSettings) {
+                        Icon(imageVector = Icons.Default.Settings, contentDescription = "Settings")
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                     titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer

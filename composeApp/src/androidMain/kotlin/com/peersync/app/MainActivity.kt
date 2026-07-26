@@ -1,36 +1,61 @@
 package com.peersync.app
 
 import android.Manifest
+import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.content.Context
+import android.provider.Settings
 import androidx.activity.result.contract.ActivityResultContracts
 import android.net.Uri
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.core.content.ContextCompat
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import com.peersync.app.engine.PeerSyncEngine
 import com.peersync.app.model.ControlMessage
 import com.peersync.app.model.DiscoveredSession
 
+data class PermissionState(
+    val name: String,
+    val isGranted: Boolean
+)
+
 class MainActivity : ComponentActivity() {
 
     private lateinit var engine: PeerSyncEngine
+    
+    // Permission states
+    private var locationPermissionGranted = mutableStateOf(false)
+    private var microphonePermissionGranted = mutableStateOf(false)
+    private var cameraPermissionGranted = mutableStateOf(false)
+    private var notificationsPermissionGranted = mutableStateOf(false)
+    private var batteryOptimizationExempt = mutableStateOf(false)
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         val allGranted = permissions.values.all { it }
+        updatePermissionStates()
         if (allGranted) {
             engine.startDiscovery()
         }
+    }
+
+    private val batteryOptimizationLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { _ ->
+        updatePermissionStates()
     }
 
     private val musicFolderPickerLauncher = registerForActivityResult(
@@ -78,6 +103,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         engine = PeerSyncEngine.getInstance(this)
+        
+        updatePermissionStates()
 
         val requiredPermissions = mutableListOf(
             Manifest.permission.RECORD_AUDIO,
@@ -93,7 +120,7 @@ class MainActivity : ComponentActivity() {
         }
 
         val allGranted = requiredPermissions.all {
-            checkSelfPermission(it) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED
         }
 
         if (allGranted) {
@@ -111,6 +138,13 @@ class MainActivity : ComponentActivity() {
             val audioRoute by engine.audioRoute.collectAsState()
             val peerVolumes by engine.peerVolumes.collectAsState()
             val speedTestResult by engine.speedTestResult.collectAsState()
+            
+            // Permission states
+            val locPermissionGranted by remember { locationPermissionGranted }
+            val micPermissionGranted by remember { microphonePermissionGranted }
+            val camPermissionGranted by remember { cameraPermissionGranted }
+            val notifPermissionGranted by remember { notificationsPermissionGranted }
+            val batteryExempt by remember { batteryOptimizationExempt }
 
             App(
                 connectionState = connectionState,
@@ -121,6 +155,31 @@ class MainActivity : ComponentActivity() {
                 audioRoute = audioRoute,
                 peerVolumes = peerVolumes,
                 speedTestResult = speedTestResult,
+                locationPermissionGranted = locPermissionGranted,
+                microphonePermissionGranted = micPermissionGranted,
+                cameraPermissionGranted = camPermissionGranted,
+                notificationsPermissionGranted = notifPermissionGranted,
+                batteryOptimizationExempt = batteryExempt,
+                onGrantLocationPermission = {
+                    requestPermissionLauncher.launch(arrayOf(
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION
+                    ))
+                },
+                onGrantMicrophonePermission = {
+                    requestPermissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+                },
+                onGrantCameraPermission = {
+                    requestPermissionLauncher.launch(arrayOf(Manifest.permission.CAMERA))
+                },
+                onGrantNotificationsPermission = {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        requestPermissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
+                    }
+                },
+                onGrantBatteryOptimizationExemption = {
+                    requestBatteryOptimizationExemption()
+                },
                 onCreateSession = { name ->
                     engine.createSession(name, Build.MODEL)
                 },
@@ -178,4 +237,45 @@ class MainActivity : ComponentActivity() {
             )
         }
     }
-}
+    
+    private fun updatePermissionStates() {
+        locationPermissionGranted.value = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        
+        microphonePermissionGranted.value = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        
+        cameraPermissionGranted.value = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+        
+        notificationsPermissionGranted.value = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(
+                this, Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true // Always granted on older versions
+        }
+        
+        batteryOptimizationExempt.value = isBatteryOptimizationExempt()
+    }
+    
+    private fun isBatteryOptimizationExempt(): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            return powerManager.isIgnoringBatteryOptimizations(packageName)
+        }
+        return false
+    }
+    
+    private fun requestBatteryOptimizationExemption() {
+        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+            data = Uri.parse("package:$packageName")
+        }
+        try {
+            batteryOptimizationLauncher.launch(intent)
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "Failed to open battery optimization settings: ${e.message}")
+        }

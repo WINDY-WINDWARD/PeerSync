@@ -31,7 +31,8 @@ fun PeerSyncNavGraph(
     onVolumeStep: () -> Unit,
     onRescan: () -> Unit,
     onRunSpeedTest: (Byte) -> Unit = {},
-    onScanQrCodeRequest: () -> Unit = {}
+    onScanQrCodeRequest: () -> Unit = {},
+    onOpenSettings: () -> Unit = {}
 ) {
     when (connectionState) {
         ConnectionState.ConnectedGroupOwner, ConnectionState.ConnectedClient -> {
@@ -51,7 +52,8 @@ fun PeerSyncNavGraph(
                 onSetPeerVolume = onSetPeerVolume,
                 onSetLocalMusicVolume = onSetLocalMusicVolume,
                 onVolumeStep = onVolumeStep,
-                onRunSpeedTest = onRunSpeedTest
+                onRunSpeedTest = onRunSpeedTest,
+                onOpenSettings = onOpenSettings
             )
         }
         else -> {
@@ -61,7 +63,8 @@ fun PeerSyncNavGraph(
                 onCreateSession = onCreateSession,
                 onJoinSession = onJoinSession,
                 onRescan = onRescan,
-                onScanQrCodeRequest = onScanQrCodeRequest
+                onScanQrCodeRequest = onScanQrCodeRequest,
+                onOpenSettings = onOpenSettings
             )
         }
     }

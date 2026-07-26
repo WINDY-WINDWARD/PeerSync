@@ -9,6 +9,8 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -45,7 +47,8 @@ fun ActiveSessionScreen(
     onSetPeerVolume: (Byte, Float) -> Unit,
     onSetLocalMusicVolume: (Float) -> Unit,
     onVolumeStep: () -> Unit,
-    onRunSpeedTest: (Byte) -> Unit = {}
+    onRunSpeedTest: (Byte) -> Unit = {},
+    onOpenSettings: () -> Unit = {}
 ) {
     var showQrCodeDialog by remember { mutableStateOf(false) }
     
@@ -67,6 +70,9 @@ fun ActiveSessionScreen(
                     titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
                 ),
                 actions = {
+                    IconButton(onClick = onOpenSettings) {
+                        Icon(imageVector = Icons.Default.Settings, contentDescription = "Settings")
+                    }
                     Button(
                         onClick = onDisconnect,
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
