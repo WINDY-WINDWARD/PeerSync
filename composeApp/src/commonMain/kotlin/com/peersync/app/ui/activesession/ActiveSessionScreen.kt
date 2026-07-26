@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -83,226 +84,249 @@ fun ActiveSessionScreen(
             )
         }
     ) { padding ->
-        Column(
+        LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(16.dp)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(
-                text = "Connected Peers (${sessionInfo?.members?.size ?: 0})",
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(bottom = 12.dp)
-            )
-
-            val members = sessionInfo?.members ?: emptyList()
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(2),
-                modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                items(members) { peer ->
-                    Card(
-                        shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (peer.isSpeaking) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant
-                        )
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            var lastHapticValue by remember(peer.originId) { mutableStateOf(peerVolumes[peer.originId] ?: 1.0f) }
-
-                            Box(
-                                modifier = Modifier
-                                    .size(48.dp)
-                                    .background(
-                                        color = if (peer.isSpeaking) Color(0xFF4CAF50) else Color.Gray,
-                                        shape = CircleShape
-                                    ),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = peer.deviceName.take(1).uppercase(),
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 20.sp
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(peer.deviceName, fontWeight = FontWeight.Bold)
-                            Text(
-                                text = if (peer.isGroupOwner) "GO" else "Peer ID ${peer.originId}",
-                                fontSize = 12.sp,
-                                color = Color.Gray
-                            )
-
-                            if (peer.originId != myOriginId) {
-                                val currentVol = peerVolumes[peer.originId] ?: 1.0f
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text("Volume: ${(currentVol * 100).roundToInt()}%", fontSize = 10.sp)
-                                Slider(
-                                    value = currentVol,
-                                    onValueChange = { newValue ->
-                                        onSetPeerVolume(peer.originId, newValue)
-                                        if (newValue != lastHapticValue) {
-                                            onVolumeStep()
-                                            lastHapticValue = newValue
-                                        }
-                                    },
-                                    valueRange = 0f..2f,
-                                    steps = 39,
-                                    modifier = Modifier.fillMaxWidth().height(24.dp)
-                                )
-                            }
-                        }
-                    }
-                }
+            // Title
+            item {
+                Text(
+                    text = "Connected Peers (${sessionInfo?.members?.size ?: 0})",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Speed Test Card
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
-                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Speed Test", fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
-                    
-                    // Show results or testing state
-                    if (speedTestResult.isNotEmpty()) {
-                        Text(
-                            text = speedTestResult,
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onTertiaryContainer,
-                            modifier = Modifier.padding(bottom = 12.dp)
-                        )
-                    }
-                    
-                    // Speed test buttons for each peer
-                    val peers = sessionInfo?.members?.filter { it.originId != myOriginId } ?: emptyList()
-                    if (peers.isNotEmpty()) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            peers.forEach { peer ->
-                                Button(
-                                    onClick = { onRunSpeedTest(peer.originId) },
-                                    modifier = Modifier.weight(1f),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.7f)
-                                    )
+            // Peers Grid
+            item {
+                val members = sessionInfo?.members ?: emptyList()
+                if (members.isNotEmpty()) {
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(minSize = 150.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        userScrollEnabled = false
+                    ) {
+                        items(members) { peer ->
+                            Card(
+                                shape = RoundedCornerShape(16.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surface
+                                )
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(16.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
-                                    Text("Test ${peer.deviceName.take(3)}", fontSize = 10.sp)
+                                    var lastHapticValue by remember(peer.originId) { mutableStateOf(peerVolumes[peer.originId] ?: 1.0f) }
+
+                                    Box(
+                                        modifier = Modifier
+                                            .size(48.dp)
+                                            .background(
+                                                color = if (peer.isSpeaking) Color(0xFF4CAF50) else Color.Gray,
+                                                shape = CircleShape
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = peer.deviceName.take(1).uppercase(),
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 20.sp
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(peer.deviceName, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        text = if (peer.isGroupOwner) "GO" else "Peer ID ${peer.originId}",
+                                        fontSize = 12.sp,
+                                        color = Color.Gray
+                                    )
+
+                                    if (peer.originId != myOriginId) {
+                                        val currentVol = peerVolumes[peer.originId] ?: 1.0f
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Text("Volume: ${(currentVol * 100).roundToInt()}%", fontSize = 10.sp)
+                                        Slider(
+                                            value = currentVol,
+                                            onValueChange = { newValue ->
+                                                onSetPeerVolume(peer.originId, newValue)
+                                                if (newValue != lastHapticValue) {
+                                                    onVolumeStep()
+                                                    lastHapticValue = newValue
+                                                }
+                                            },
+                                            valueRange = 0f..2f,
+                                            steps = 39,
+                                            modifier = Modifier.fillMaxWidth().height(24.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
-                    } else {
-                        Text(
-                            text = "No other peers connected",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.6f)
-                        )
                     }
+                } else {
+                    Text("No connected peers yet")
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Audio Controls", fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
-                    
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(if (isMicMuted) "Microphone Muted" else "Microphone Active")
-                        Switch(
-                            checked = isMicMuted,
-                            onCheckedChange = { onToggleMicMute(it) }
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text("Audio Route:", fontSize = 14.sp)
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceEvenly
-                    ) {
-                        AudioRoute.values().forEach { route ->
-                            FilterChip(
-                                selected = audioRoute == route,
-                                onClick = { onSelectAudioRoute(route) },
-                                label = { Text(route.displayName) }
+            // Speed Test Card
+            item {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("Speed Test", fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
+                        
+                        // Show results or testing state
+                        if (speedTestResult.isNotEmpty()) {
+                            Text(
+                                text = speedTestResult,
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(bottom = 12.dp)
+                            )
+                        }
+                        
+                        // Speed test buttons for each peer
+                        val peers = sessionInfo?.members?.filter { it.originId != myOriginId } ?: emptyList()
+                        if (peers.isNotEmpty()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                peers.forEach { peer ->
+                                    Button(
+                                        onClick = { onRunSpeedTest(peer.originId) },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = MaterialTheme.colorScheme.primary
+                                        )
+                                    ) {
+                                        Text("Test ${peer.deviceName.take(3)}", fontSize = 10.sp)
+                                    }
+                                }
+                            }
+                        } else {
+                            Text(
+                                text = "No other peers connected",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                             )
                         }
                     }
-                    
-                    // Show QR code button for host
-                    if (isGroupOwner) {
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Button(
-                            onClick = { showQrCodeDialog = true },
+                }
+            }
+
+            // Audio Controls Card
+            item {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("Audio Controls", fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
+                        
+                        Row(
                             modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("Show QR Code / PIN")
+                            Text(if (isMicMuted) "Microphone Muted" else "Microphone Active")
+                            Switch(
+                                checked = isMicMuted,
+                                onCheckedChange = { onToggleMicMute(it) }
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Audio Route:", fontSize = 14.sp)
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceEvenly
+                        ) {
+                            AudioRoute.values().forEach { route ->
+                                FilterChip(
+                                    selected = audioRoute == route,
+                                    onClick = { onSelectAudioRoute(route) },
+                                    label = { Text(route.displayName) }
+                                )
+                            }
+                        }
+                        
+                        // Show QR code button for host
+                        if (isGroupOwner) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Button(
+                                onClick = { showQrCodeDialog = true },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            ) {
+                                Text("Show QR Code / PIN")
+                            }
                         }
                     }
                 }
             }
+
+            // Shared Music Controls Card (for owner)
             if (myOriginId == 0.toByte()) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f))
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("Shared Music Controls", fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Button(
-                            onClick = onSelectMusicRequest,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("Select Music Folder")
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text("Shared Music Controls", fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = onSelectMusicRequest,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Select Music Folder")
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceEvenly
+                            ) {
+                                IconButton(onClick = { onMediaControl(MediaAction.SKIP_PREVIOUS) }) { Text("PREV") }
+                                IconButton(onClick = { onMediaControl(MediaAction.PLAY) }) { Text("PLAY") }
+                                IconButton(onClick = { onMediaControl(MediaAction.PAUSE) }) { Text("PAUSE") }
+                                IconButton(onClick = { onMediaControl(MediaAction.SKIP_NEXT) }) { Text("NEXT") }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            var musicVolume by remember { mutableStateOf(1.0f) }
+                            Text("Music Volume: ${(musicVolume * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
+                            Slider(
+                                value = musicVolume,
+                                onValueChange = { 
+                                    musicVolume = it
+                                    onSetLocalMusicVolume(it)
+                                },
+                                valueRange = 0f..3f,
+                                steps = 59,
+                                modifier = Modifier.fillMaxWidth()
+                            )
                         }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceEvenly
-                        ) {
-                            IconButton(onClick = { onMediaControl(MediaAction.SKIP_PREVIOUS) }) { Text("PREV") }
-                            IconButton(onClick = { onMediaControl(MediaAction.PLAY) }) { Text("PLAY") }
-                            IconButton(onClick = { onMediaControl(MediaAction.PAUSE) }) { Text("PAUSE") }
-                            IconButton(onClick = { onMediaControl(MediaAction.SKIP_NEXT) }) { Text("NEXT") }
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        var musicVolume by remember { mutableStateOf(1.0f) }
-                        Text("Music Volume: ${(musicVolume * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
-                        Slider(
-                            value = musicVolume,
-                            onValueChange = { 
-                                musicVolume = it
-                                onSetLocalMusicVolume(it)
-                            },
-                            valueRange = 0f..3f,
-                            steps = 59,
-                            modifier = Modifier.fillMaxWidth()
-                        )
                     }
                 }
+            }
+            
+            // Add bottom spacer to prevent content from being hidden
+            item {
+                Spacer(modifier = Modifier.height(16.dp))
             }
         }
     }
@@ -319,6 +343,7 @@ fun ActiveSessionScreen(
         AlertDialog(
             onDismissRequest = { showQrCodeDialog = false },
             title = { Text("Invite Guests") },
+            containerColor = MaterialTheme.colorScheme.surface,
             text = {
                 Column(
                     modifier = Modifier.fillMaxWidth(),
@@ -353,7 +378,7 @@ fun ActiveSessionScreen(
                     // PIN Display
                     Card(
                         shape = RoundedCornerShape(8.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(

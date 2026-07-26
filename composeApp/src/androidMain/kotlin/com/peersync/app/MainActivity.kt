@@ -279,3 +279,5 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) {
             android.util.Log.e("MainActivity", "Failed to open battery optimization settings: ${e.message}")
         }
+    }
+}

@@ -46,8 +46,8 @@ fun SessionListScreen(
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    titleContentColor = MaterialTheme.colorScheme.onPrimary
                 )
             )
         },
@@ -70,7 +70,7 @@ fun SessionListScreen(
             // Connection Status Banner
             Card(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
             ) {
                 Row(
                     modifier = Modifier.padding(16.dp),
@@ -94,7 +94,8 @@ fun SessionListScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     Button(
                         onClick = onScanQrCodeRequest,
-                        modifier = Modifier.height(40.dp)
+                        modifier = Modifier.height(40.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                     ) {
                         Text("QR", fontSize = 12.sp)
                     }
@@ -125,7 +126,7 @@ fun SessionListScreen(
                                 .fillMaxWidth()
                                 .clickable { selectedSession = session },
                             shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f))
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                         ) {
                             Row(
                                 modifier = Modifier
@@ -138,7 +139,10 @@ fun SessionListScreen(
                                     Text(session.sessionName, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                                     Text("Host: ${session.deviceName}", fontSize = 12.sp, color = Color.Gray)
                                 }
-                                Button(onClick = { selectedSession = session }) {
+                                Button(
+                                    onClick = { selectedSession = session },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                                ) {
                                     Text("Join")
                                 }
                             }
@@ -154,6 +158,7 @@ fun SessionListScreen(
         AlertDialog(
             onDismissRequest = { showCreateDialog = false },
             title = { Text("Create Intercom Session") },
+            containerColor = MaterialTheme.colorScheme.surface,
             text = {
                 OutlinedTextField(
                     value = newSessionName,
@@ -181,6 +186,7 @@ fun SessionListScreen(
         AlertDialog(
             onDismissRequest = { selectedSession = null },
             title = { Text("Join '${session.sessionName}'") },
+            containerColor = MaterialTheme.colorScheme.surface,
             text = {
                 Column {
                     Text("Enter 8-digit PIN provided by Group Owner:", fontSize = 14.sp)
@@ -201,7 +207,8 @@ fun SessionListScreen(
                         pinInput = ""
                         onJoinSession(session, pin)
                     },
-                    enabled = pinInput.length == 8
+                    enabled = pinInput.length == 8,
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                 ) {
                     Text("Connect")
                 }

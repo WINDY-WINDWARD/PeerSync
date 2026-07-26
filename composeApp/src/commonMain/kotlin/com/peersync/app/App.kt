@@ -1,7 +1,9 @@
 package com.peersync.app
 
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.*
+import androidx.compose.ui.graphics.Color
 import com.peersync.app.model.ConnectionState
 import com.peersync.app.model.MediaAction
 import com.peersync.app.model.SessionInfo
@@ -9,6 +11,14 @@ import com.peersync.app.model.AudioRoute
 import com.peersync.app.navigation.PeerSyncNavGraph
 import com.peersync.app.model.DiscoveredSession
 import com.peersync.app.ui.settings.SettingsScreen
+
+// Color Palette - Material 3 Theme
+private val PrimaryColor = Color(0xFF92dce5)           // Frosted Blue
+private val SecondaryColor = Color(0xFF7c7c7c)         // Grey
+private val BackgroundColor = Color(0xFFeee5e9)        // Lavender Blush
+private val SurfaceColor = Color(0xFFeee5e9)           // Lavender Blush (same as background)
+private val ErrorColor = Color(0xFFd64933)             // Burnt Tangerine
+private val OnColor = Color(0xFF000000)                // Black (for all On* colors)
 
 @Composable
 fun App(
@@ -46,7 +56,21 @@ fun App(
 ) {
     var showSettings by remember { mutableStateOf(false) }
     
-    MaterialTheme {
+    // Custom Material 3 Color Scheme
+    val customColorScheme = lightColorScheme(
+        primary = PrimaryColor,
+        secondary = SecondaryColor,
+        background = BackgroundColor,
+        surface = SurfaceColor,
+        error = ErrorColor,
+        onPrimary = OnColor,
+        onSecondary = OnColor,
+        onBackground = OnColor,
+        onSurface = OnColor,
+        onError = OnColor
+    )
+    
+    MaterialTheme(colorScheme = customColorScheme) {
         if (showSettings) {
             // Show Settings Screen
             SettingsScreen(
@@ -87,6 +111,7 @@ fun App(
                 onRunSpeedTest = onRunSpeedTest,
                 onScanQrCodeRequest = onScanQrCodeRequest,
                 onOpenSettings = { showSettings = true }
-            )
-        }
-    }
+             )
+         }
+     }
+}

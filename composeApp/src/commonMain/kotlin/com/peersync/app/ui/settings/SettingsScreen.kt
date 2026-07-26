@@ -41,8 +41,8 @@ fun SettingsScreen(
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    titleContentColor = MaterialTheme.colorScheme.onPrimary
                 )
             )
         }
@@ -119,7 +119,7 @@ fun SettingsScreen(
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                        containerColor = MaterialTheme.colorScheme.surface
                     )
                 ) {
                     Column(
@@ -140,7 +140,7 @@ fun SettingsScreen(
                                     "• Battery Exemption: To prevent system sleep during active sessions\n\n" +
                                     "Granted permissions cannot be revoked from this screen.",
                             fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                     }
                 }
@@ -159,11 +159,7 @@ private fun PermissionCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = if (isGranted) {
-                Color.Green.copy(alpha = 0.1f)
-            } else {
-                Color.Red.copy(alpha = 0.1f)
-            }
+            containerColor = MaterialTheme.colorScheme.surface
         ),
         border = CardDefaults.outlinedCardBorder()
     ) {
@@ -186,7 +182,7 @@ private fun PermissionCard(
                     Text(
                         text = description,
                         fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.padding(top = 4.dp)
                     )
                 }
@@ -205,7 +201,8 @@ private fun PermissionCard(
                 Button(
                     onClick = onGrantClick,
                     modifier = Modifier.height(36.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                 ) {
                     Text("Grant", fontSize = 12.sp)
                 }
