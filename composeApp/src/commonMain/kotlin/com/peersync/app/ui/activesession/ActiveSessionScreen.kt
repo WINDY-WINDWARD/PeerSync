@@ -4,7 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -84,7 +85,7 @@ fun ActiveSessionScreen(
             )
         }
     ) { padding ->
-        LazyColumn(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
@@ -92,92 +93,102 @@ fun ActiveSessionScreen(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             // Title
-            item {
-                Text(
-                    text = "Connected Peers (${sessionInfo?.members?.size ?: 0})",
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(bottom = 12.dp)
-                )
-            }
+            Text(
+                text = "Connected Peers (${sessionInfo?.members?.size ?: 0})",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(bottom = 12.dp)
+            )
 
-            // Peers Grid
-            item {
-                val members = sessionInfo?.members ?: emptyList()
-                if (members.isNotEmpty()) {
-                    LazyVerticalGrid(
-                        columns = GridCells.Adaptive(minSize = 150.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                        modifier = Modifier.fillMaxWidth(),
-                        userScrollEnabled = false
-                    ) {
-                        items(members) { peer ->
-                            Card(
-                                shape = RoundedCornerShape(16.dp),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.surface
-                                )
+            // Peers Grid - Takes up available space
+            val members = sessionInfo?.members ?: emptyList()
+            if (members.isNotEmpty()) {
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = 150.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                ) {
+                    items(members) { peer ->
+                        Card(
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surface
+                            )
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(16.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
                             ) {
-                                Column(
-                                    modifier = Modifier.padding(16.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally
+                                var lastHapticValue by remember(peer.originId) { mutableStateOf(peerVolumes[peer.originId] ?: 1.0f) }
+
+                                Box(
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .background(
+                                            color = if (peer.isSpeaking) Color(0xFF4CAF50) else Color.Gray,
+                                            shape = CircleShape
+                                        ),
+                                    contentAlignment = Alignment.Center
                                 ) {
-                                    var lastHapticValue by remember(peer.originId) { mutableStateOf(peerVolumes[peer.originId] ?: 1.0f) }
-
-                                    Box(
-                                        modifier = Modifier
-                                            .size(48.dp)
-                                            .background(
-                                                color = if (peer.isSpeaking) Color(0xFF4CAF50) else Color.Gray,
-                                                shape = CircleShape
-                                            ),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text(
-                                            text = peer.deviceName.take(1).uppercase(),
-                                            color = Color.White,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 20.sp
-                                        )
-                                    }
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Text(peer.deviceName, fontWeight = FontWeight.Bold)
                                     Text(
-                                        text = if (peer.isGroupOwner) "GO" else "Peer ID ${peer.originId}",
-                                        fontSize = 12.sp,
-                                        color = Color.Gray
+                                        text = peer.deviceName.take(1).uppercase(),
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 20.sp
                                     )
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(peer.deviceName, fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = if (peer.isGroupOwner) "GO" else "Peer ID ${peer.originId}",
+                                    fontSize = 12.sp,
+                                    color = Color.Gray
+                                )
 
-                                    if (peer.originId != myOriginId) {
-                                        val currentVol = peerVolumes[peer.originId] ?: 1.0f
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        Text("Volume: ${(currentVol * 100).roundToInt()}%", fontSize = 10.sp)
-                                        Slider(
-                                            value = currentVol,
-                                            onValueChange = { newValue ->
-                                                onSetPeerVolume(peer.originId, newValue)
-                                                if (newValue != lastHapticValue) {
-                                                    onVolumeStep()
-                                                    lastHapticValue = newValue
-                                                }
-                                            },
-                                            valueRange = 0f..2f,
-                                            steps = 39,
-                                            modifier = Modifier.fillMaxWidth().height(24.dp)
-                                        )
-                                    }
+                                if (peer.originId != myOriginId) {
+                                    val currentVol = peerVolumes[peer.originId] ?: 1.0f
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text("Volume: ${(currentVol * 100).roundToInt()}%", fontSize = 10.sp)
+                                    Slider(
+                                        value = currentVol,
+                                        onValueChange = { newValue ->
+                                            onSetPeerVolume(peer.originId, newValue)
+                                            if (newValue != lastHapticValue) {
+                                                onVolumeStep()
+                                                lastHapticValue = newValue
+                                            }
+                                        },
+                                        valueRange = 0f..2f,
+                                        steps = 39,
+                                        modifier = Modifier.fillMaxWidth().height(24.dp)
+                                    )
                                 }
                             }
                         }
                     }
-                } else {
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
                     Text("No connected peers yet")
                 }
             }
 
-            // Speed Test Card
-            item {
+            // Bottom Control Cards - Scrollable
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Speed Test Card
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -225,10 +236,8 @@ fun ActiveSessionScreen(
                         }
                     }
                 }
-            }
 
-            // Audio Controls Card
-            item {
+                // Audio Controls Card
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -277,11 +286,9 @@ fun ActiveSessionScreen(
                         }
                     }
                 }
-            }
 
-            // Shared Music Controls Card (for owner)
-            if (myOriginId == 0.toByte()) {
-                item {
+                // Shared Music Controls Card (for owner)
+                if (myOriginId == 0.toByte()) {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(16.dp),
@@ -322,10 +329,8 @@ fun ActiveSessionScreen(
                         }
                     }
                 }
-            }
-            
-            // Add bottom spacer to prevent content from being hidden
-            item {
+                
+                // Add bottom spacer to prevent content from being hidden
                 Spacer(modifier = Modifier.height(16.dp))
             }
         }
