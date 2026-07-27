@@ -2,6 +2,7 @@ package com.peersync.app.engine
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.media.AudioManager
 import android.media.MediaPlayer
 import android.net.Uri
 import android.util.Log
@@ -530,6 +531,18 @@ class PeerSyncEngine private constructor(private val context: Context) {
                 Log.e(TAG, "AUDIO ENGINE STREAM ERROR: $errorMessage — restarting audio")
                 audioBridge.stop()
                 kotlinx.coroutines.delay(300)
+                
+                // If we are routing to Bluetooth, wait for the OS SCO hardware handshake to finish
+                if (_audioRoute.value == AudioRoute.BLUETOOTH) {
+                    try {
+                        Log.d(TAG, "Waiting for Bluetooth SCO handshake before restarting audio...")
+                        audioBridge.scoState.first { it == AudioManager.SCO_AUDIO_STATE_CONNECTED }
+                        Log.d(TAG, "SCO handshake complete, restarting audio stream")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to wait for SCO handshake: ${e.message}")
+                    }
+                }
+                
                 audioBridge.start()
             }
         }
