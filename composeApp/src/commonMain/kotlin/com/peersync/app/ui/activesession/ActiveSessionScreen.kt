@@ -19,6 +19,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
@@ -29,6 +30,7 @@ import com.peersync.app.model.AudioDeviceModel
 import com.peersync.app.model.MediaAction
 import com.peersync.app.model.PeerDevice
 import com.peersync.app.model.SessionInfo
+import com.peersync.app.model.ConnectionState
 import com.peersync.app.ui.util.generateQrBitmap
 
 import kotlin.math.roundToInt
@@ -36,13 +38,14 @@ import kotlin.math.roundToInt
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ActiveSessionScreen(
+    connectionState: ConnectionState = ConnectionState.Disconnected,
     sessionInfo: SessionInfo?,
     isGroupOwner: Boolean,
     myOriginId: Byte,
     isMicMuted: Boolean,
     audioRoute: AudioRoute,
     peerVolumes: Map<Byte, Float>,
-    speedTestResult: String = "",
+    peerLatencies: Map<Byte, Long> = emptyMap(),
     availableBluetoothDevices: List<AudioDeviceModel> = emptyList(),
     selectedBluetoothDeviceId: Int? = null,
     onDisconnect: () -> Unit,
@@ -91,20 +94,24 @@ fun ActiveSessionScreen(
             )
         }
     ) { padding ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Title
-            Text(
-                text = "Connected Peers (${sessionInfo?.members?.size ?: 0})",
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(bottom = 12.dp)
-            )
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Title
+                Text(
+                    text = "Connected Peers (${sessionInfo?.members?.size ?: 0})",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
 
             // Peers Grid - Takes up available space
             val members = sessionInfo?.members ?: emptyList()
@@ -118,10 +125,19 @@ fun ActiveSessionScreen(
                         .fillMaxWidth()
                 ) {
                     items(members) { peer ->
+                        // Determine card color based on latency
+                        val latency = peerLatencies[peer.originId]
+                        val cardColor = when {
+                            latency == null -> MaterialTheme.colorScheme.surface
+                            latency < 100 -> Color(0xFF81C784) // Green
+                            latency <= 200 -> Color(0xFFFFF176) // Yellow
+                            else -> Color(0xFFE57373) // Red
+                        }
+                        
                         Card(
                             shape = RoundedCornerShape(16.dp),
                             colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surface
+                                containerColor = cardColor
                             )
                         ) {
                             Column(
@@ -153,6 +169,16 @@ fun ActiveSessionScreen(
                                     fontSize = 12.sp,
                                     color = Color.Gray
                                 )
+                                
+                                // Display latency if available
+                                if (latency != null) {
+                                    Text(
+                                        text = "${latency}ms",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(top = 4.dp)
+                                    )
+                                }
 
                                 if (peer.originId != myOriginId) {
                                     val currentVol = peerVolumes[peer.originId] ?: 1.0f
@@ -194,55 +220,6 @@ fun ActiveSessionScreen(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Speed Test Card
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("Speed Test", fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
-                        
-                        // Show results or testing state
-                        if (speedTestResult.isNotEmpty()) {
-                            Text(
-                                text = speedTestResult,
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.padding(bottom = 12.dp)
-                            )
-                        }
-                        
-                        // Speed test buttons for each peer
-                        val peers = sessionInfo?.members?.filter { it.originId != myOriginId } ?: emptyList()
-                        if (peers.isNotEmpty()) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                peers.forEach { peer ->
-                                    Button(
-                                        onClick = { onRunSpeedTest(peer.originId) },
-                                        modifier = Modifier.weight(1f),
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = MaterialTheme.colorScheme.primary
-                                        )
-                                    ) {
-                                        Text("Test ${peer.deviceName.take(3)}", fontSize = 10.sp)
-                                    }
-                                }
-                            }
-                        } else {
-                            Text(
-                                text = "No other peers connected",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                            )
-                        }
-                    }
-                }
-
                 // Audio Controls Card
                 Card(
                     shape = RoundedCornerShape(16.dp),
@@ -384,6 +361,28 @@ fun ActiveSessionScreen(
                 
                 // Add bottom spacer to prevent content from being hidden
                 Spacer(modifier = Modifier.height(16.dp))
+            }
+            
+            // Reconnecting Overlay
+            if (connectionState == ConnectionState.Reconnecting) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.8f))
+                        .pointerInput(Unit) { /* Block all pointer events */ },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator(color = Color.White)
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text("Connection Lost. Reconnecting...", color = Color.White, fontWeight = FontWeight.Bold)
+                        Text("Waiting for host (up to 5 mins)", color = Color.LightGray, fontSize = 12.sp)
+                        Spacer(modifier = Modifier.height(24.dp))
+                        Button(onClick = onDisconnect, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) {
+                            Text("Disconnect Now", color = Color.White)
+                        }
+                    }
+                }
             }
         }
     }
