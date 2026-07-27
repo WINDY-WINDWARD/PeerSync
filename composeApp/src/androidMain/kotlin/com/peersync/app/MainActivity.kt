@@ -137,7 +137,7 @@ class MainActivity : ComponentActivity() {
             val isMicMuted by engine.isMicMuted.collectAsState()
             val audioRoute by engine.audioRoute.collectAsState()
             val peerVolumes by engine.peerVolumes.collectAsState()
-            val speedTestResult by engine.speedTestResult.collectAsState()
+            val peerLatencies by engine.peerLatencies.collectAsState()
             val availableBluetoothDevices by engine.availableBluetoothDevices.collectAsState()
             val selectedBluetoothDeviceId by engine.selectedBluetoothDeviceId.collectAsState()
             
@@ -156,7 +156,7 @@ class MainActivity : ComponentActivity() {
                 isMicMuted = isMicMuted,
                 audioRoute = audioRoute,
                 peerVolumes = peerVolumes,
-                speedTestResult = speedTestResult,
+                peerLatencies = peerLatencies,
                 availableBluetoothDevices = availableBluetoothDevices,
                 selectedBluetoothDeviceId = selectedBluetoothDeviceId,
                 locationPermissionGranted = locPermissionGranted,

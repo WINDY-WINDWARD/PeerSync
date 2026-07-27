@@ -19,7 +19,7 @@ fun PeerSyncNavGraph(
     isMicMuted: Boolean,
     audioRoute: AudioRoute,
     peerVolumes: Map<Byte, Float>,
-    speedTestResult: String = "",
+    peerLatencies: Map<Byte, Long> = emptyMap(),
     availableBluetoothDevices: List<AudioDeviceModel> = emptyList(),
     selectedBluetoothDeviceId: Int? = null,
     onCreateSession: (String) -> Unit,
@@ -41,13 +41,14 @@ fun PeerSyncNavGraph(
     when (connectionState) {
         ConnectionState.ConnectedGroupOwner, ConnectionState.ConnectedClient -> {
             ActiveSessionScreen(
+                connectionState = connectionState,
                 sessionInfo = sessionInfo,
                 isGroupOwner = connectionState == ConnectionState.ConnectedGroupOwner,
                 myOriginId = myOriginId,
                 isMicMuted = isMicMuted,
                 audioRoute = audioRoute,
                 peerVolumes = peerVolumes,
-                speedTestResult = speedTestResult,
+                peerLatencies = peerLatencies,
                 availableBluetoothDevices = availableBluetoothDevices,
                 selectedBluetoothDeviceId = selectedBluetoothDeviceId,
                 onDisconnect = onDisconnect,
