@@ -1,0 +1,2 @@
+sed -i 's/Log.d(TAG, "Connected to host socket at $HOST_ADDRESS:$HOST_PORT")/Log.d(TAG, "Connected to host socket at $targetAddress:$HOST_PORT")/' composeApp/src/androidMain/kotlin/com/peersync/app/network/WifiSocketController.kt
+sed -i 's/_wifiSocketState.value = WifiSocketState.ConnectedClient(HOST_ADDRESS)/_wifiSocketState.value = WifiSocketState.ConnectedClient(targetAddress)/' composeApp/src/androidMain/kotlin/com/peersync/app/network/WifiSocketController.kt

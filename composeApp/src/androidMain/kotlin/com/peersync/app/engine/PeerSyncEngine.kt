@@ -2,6 +2,7 @@ package com.peersync.app.engine
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.media.MediaPlayer
 import android.net.Uri
 import android.util.Log
 import com.peersync.app.model.*
@@ -73,8 +74,8 @@ class PeerSyncEngine private constructor(private val context: Context) {
     private val _peerVolumes = MutableStateFlow<Map<Byte, Float>>(emptyMap())
     val peerVolumes: StateFlow<Map<Byte, Float>> = _peerVolumes.asStateFlow()
 
-    private val _speedTestResult = MutableStateFlow<String>("")
-    val speedTestResult: StateFlow<String> = _speedTestResult.asStateFlow()
+    private val _peerLatencies = MutableStateFlow<Map<Byte, Long>>(emptyMap())
+    val peerLatencies: StateFlow<Map<Byte, Long>> = _peerLatencies.asStateFlow()
 
     private var myDeviceName: String = "PeerDevice"
     private var currentPin: String = ""
@@ -156,6 +157,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
                             }
                             
                             audioBridge.start()
+                            startAutoSpeedTest()
                         }
                     }
                     is WifiSocketState.ConnectedClient -> {
@@ -213,6 +215,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
                             setMyOriginId(msg.assignedOriginId)
                             _connectionState.value = ConnectionState.ConnectedClient
                             audioBridge.start()
+                            startAutoSpeedTest()
                         } else if (msg.targetDeviceId != myDeviceName) {
                             Log.d(TAG, "JoinResponse not for us, ignoring (target=${msg.targetDeviceId}, mine=$myDeviceName)")
                         } else {
@@ -249,8 +252,12 @@ class PeerSyncEngine private constructor(private val context: Context) {
                     is ControlMessage.SpeedTestPong -> {
                         val rttMs = System.currentTimeMillis() - msg.originalTimestamp
                         pendingSpeedTests.remove(msg.originalTimestamp)
-                        Log.d(TAG, "Speed test completed: Ping=${rttMs}ms")
-                        _speedTestResult.value = "Ping: ${rttMs}ms"
+                        Log.d(TAG, "Speed test completed: Ping=${rttMs}ms from originId=${msg.senderOriginId}")
+                        
+                        // Update peer latencies map
+                        val currentMap = _peerLatencies.value.toMutableMap()
+                        currentMap[msg.senderOriginId] = rttMs
+                        _peerLatencies.value = currentMap
                     }
                     else -> {
                         Log.d(TAG, "Received message type: ${msg::class.simpleName}")
@@ -394,43 +401,61 @@ class PeerSyncEngine private constructor(private val context: Context) {
                         wifiSocketController.broadcastControlMessage(disconnectMsg)
                     }
                 } else {
-                    // Client got disconnected from host - Initiate Host Handoff protocol
+                    // Client got disconnected from host - Initiate 5-minute fallback reconnection
                     if (endpointId == "host" || endpointId == hostEndpointId) {
-                        Log.w(TAG, "Host disconnected! Initiating Host Handoff protocol...")
-                        val currentSession = _sessionInfo.value
-
-                        if (currentSession != null && currentSession.members.size > 1) {
-                            // Filter out the old host to find surviving clients
-                            val survivingMembers = currentSession.members.filter { !it.isGroupOwner }
-                            // Elect the client with the lowest originId to be the new host
-                            val newHost = survivingMembers.minByOrNull { it.originId }
-                            
-                            // Temporarily stop the audio bridge and socket (but don't wipe Engine session state yet)
-                            audioBridge.stop()
-                            wifiSocketController.disconnect()
-                            hostEndpointId = null // FIX: Clear dead host ID to allow JoinRequest on reconnect
-                            
-                            if (newHost != null && newHost.originId == _myOriginId.value) {
-                                Log.i(TAG, "I have been elected as the NEW HOST. Starting hotspot...")
-                                scope.launch {
-                                    kotlinx.coroutines.delay(1000) // Brief delay to ensure sockets clear
-                                    // Re-host the network using the EXACT cached credentials
-                                    restoreHostSession()
+                        Log.w(TAG, "Host disconnected! Initiating 5-minute fallback reconnection...")
+                        
+                        // Set reconnecting state
+                        _connectionState.value = ConnectionState.Reconnecting
+                        
+                        // Clear active socket states but preserve session info
+                        audioBridge.stop()
+                        wifiSocketController.disconnect()
+                        hostEndpointId = null
+                        
+                        // Play disconnect ping sound
+                        try {
+                            val resourceId = context.resources.getIdentifier("disconnect_ping", "raw", context.packageName)
+                            if (resourceId != 0) {
+                                val mediaPlayer = MediaPlayer.create(context, resourceId)
+                                mediaPlayer.setOnCompletionListener { mp ->
+                                    mp.release()
                                 }
-                            } else {
-                                Log.i(TAG, "Another device is the new host. Reconnecting shortly...")
-                                scope.launch {
-                                    _connectionState.value = ConnectionState.Connecting
-                                    // Wait 10 seconds to give the new host ample time to tear down and spin up the AP
-                                    kotlinx.coroutines.delay(10000)
-                                    // Reconnect programmatically
-                                    wifiSocketController.connectToHost(activeSessionName, activePin)
-                                }
+                                mediaPlayer.start()
                             }
-                        } else {
-                            // If no other members or session info is missing, just disconnect fully
-                            Log.d(TAG, "No surviving members to hand off to. Ending session.")
-                            disconnect()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to play disconnect ping: ${e.message}")
+                        }
+                        
+                        // Start 5-minute fallback loop
+                        scope.launch {
+                            val fallbackStartTime = System.currentTimeMillis()
+                            val fallbackTimeoutMs = 300000L  // 5 minutes
+                            val retryIntervalMs = 5000L       // 5 seconds
+                            
+                            while (isActive && _connectionState.value == ConnectionState.Reconnecting) {
+                                val elapsedMs = System.currentTimeMillis() - fallbackStartTime
+                                
+                                if (elapsedMs >= fallbackTimeoutMs) {
+                                    // Timeout reached, disconnect fully
+                                    Log.w(TAG, "5-minute fallback timeout reached. Disconnecting.")
+                                    disconnect()
+                                    break
+                                }
+                                
+                                // Try to reconnect to host
+                                Log.d(TAG, "Attempting to reconnect to host (${elapsedMs / 1000}s elapsed)...")
+                                wifiSocketController.connectToHost(activeSessionName, activePin)
+                                
+                                // Wait before next retry
+                                kotlinx.coroutines.delay(retryIntervalMs)
+                            }
+                            
+                            // If successfully reconnected before timeout
+                            if (_connectionState.value == ConnectionState.ConnectedClient) {
+                                Log.i(TAG, "Successfully reconnected to host!")
+                                audioBridge.start()
+                            }
                         }
                     }
                 }
@@ -672,28 +697,46 @@ class PeerSyncEngine private constructor(private val context: Context) {
         startDiscovery()
     }
 
-     fun runSpeedTest(targetOriginId: Byte) {
-         val currentSession = _sessionInfo.value ?: return
-         val targetPeer = currentSession.members.firstOrNull { it.originId == targetOriginId } ?: return
-         
-         val timestamp = System.currentTimeMillis()
-         
-         // Track this test
-         pendingSpeedTests[timestamp] = 1  // Just track that a test is pending
-         
-         // Send speed test ping (lightweight: just timestamp)
-         val ping = ControlMessage.SpeedTestPing(
-             senderOriginId = _myOriginId.value,
-             timestamp = timestamp
-         )
-         
-         Log.d(TAG, "Starting speed test to originId=$targetOriginId with timestamp=$timestamp")
-         _speedTestResult.value = "Testing..."
-         
-         // Broadcast ping to all peers (star topology: host routes to target)
-         Log.d(TAG, "Broadcasting speed test ping via WiFi socket")
-         wifiSocketController.broadcastControlMessage(ping)
-         Log.d(TAG, "Speed test ping broadcasted successfully")
+      fun runSpeedTest(targetOriginId: Byte) {
+          val currentSession = _sessionInfo.value ?: return
+          val targetPeer = currentSession.members.firstOrNull { it.originId == targetOriginId } ?: return
+          
+          val timestamp = System.currentTimeMillis()
+          
+          // Track this test
+          pendingSpeedTests[timestamp] = 1  // Just track that a test is pending
+          
+          // Send speed test ping (lightweight: just timestamp)
+          val ping = ControlMessage.SpeedTestPing(
+              senderOriginId = _myOriginId.value,
+              timestamp = timestamp
+          )
+          
+          Log.d(TAG, "Starting speed test to originId=$targetOriginId with timestamp=$timestamp")
+          
+          // Broadcast ping to all peers (star topology: host routes to target)
+          Log.d(TAG, "Broadcasting speed test ping via WiFi socket")
+          wifiSocketController.broadcastControlMessage(ping)
+          Log.d(TAG, "Speed test ping broadcasted successfully")
+      }
+
+     private fun startAutoSpeedTest() {
+         scope.launch {
+             while (isActive && _sessionInfo.value != null) {
+                 val session = _sessionInfo.value
+                 if (session != null) {
+                     // Iterate through all members except self
+                     session.members.forEach { peer ->
+                         if (peer.originId != _myOriginId.value) {
+                             runSpeedTest(peer.originId)
+                         }
+                     }
+                 }
+                 
+                 // Wait 30 seconds before next round of tests
+                 kotlinx.coroutines.delay(30000)
+             }
+         }
      }
 
     private fun setMyOriginId(originId: Byte) {
