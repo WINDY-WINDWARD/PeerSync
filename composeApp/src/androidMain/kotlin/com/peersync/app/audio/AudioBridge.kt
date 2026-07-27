@@ -27,6 +27,9 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 data class EncodedAudioFrame(
     val flag: Byte,
@@ -62,6 +65,9 @@ class AudioBridge(private val context: Context) {
     private val _streamErrors = MutableSharedFlow<String>(extraBufferCapacity = 16)
     val streamErrors: SharedFlow<String> = _streamErrors.asSharedFlow()
 
+    private val _scoState = MutableStateFlow<Int>(AudioManager.SCO_AUDIO_STATE_DISCONNECTED)
+    val scoState: StateFlow<Int> = _scoState.asStateFlow()
+
     private external fun nativeInit(): Boolean
     private external fun nativeStartAudio(sessionId: Int): Boolean
     private external fun nativeStopAudio()
@@ -91,6 +97,7 @@ class AudioBridge(private val context: Context) {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED) {
                 val state = intent.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, AudioManager.SCO_AUDIO_STATE_ERROR)
+                _scoState.value = state
                 when (state) {
                     AudioManager.SCO_AUDIO_STATE_CONNECTED -> Log.i(TAG, "SCO Hardware connection ESTABLISHED")
                     AudioManager.SCO_AUDIO_STATE_DISCONNECTED -> Log.i(TAG, "SCO Hardware connection DISCONNECTED")
