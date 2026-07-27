@@ -158,6 +158,13 @@ class WifiSocketController(private val context: Context) {
      * Creates a Group Owner that acts like a hotspot.
      */
     fun startHosting(sessionName: String, pin: String) {
+        // Attempt to clean up any zombie P2P groups from previous crashes
+        if (wifiP2pManager != null) {
+            if (p2pChannel == null) {
+                p2pChannel = wifiP2pManager!!.initialize(context, android.os.Looper.getMainLooper(), null)
+            }
+            wifiP2pManager!!.removeGroup(p2pChannel, null)
+        }
         if (isHosting) {
             Log.w(TAG, "Already hosting")
             return

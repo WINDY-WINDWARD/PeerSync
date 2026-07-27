@@ -22,6 +22,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -48,6 +50,7 @@ class AudioBridge(private val context: Context) {
 
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val routeMutex = Mutex()
     private var audioFocusRequest: AudioFocusRequest? = null
     private var routeReapplyJob: Job? = null
     private var currentRoute: AudioRoute = AudioRoute.LOUDSPEAKER
@@ -258,104 +261,111 @@ class AudioBridge(private val context: Context) {
         applyAudioRoute(route, source = "manual", targetDeviceId = deviceId)
     }
 
-    private fun applyAudioRoute(route: AudioRoute, source: String, targetDeviceId: Int? = null) {
-        currentRoute = route
-        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+     private fun applyAudioRoute(route: AudioRoute, source: String, targetDeviceId: Int? = null) {
+         // Immediately update state on calling thread so UI responds instantly
+         currentRoute = route
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val available = audioManager.availableCommunicationDevices
-            val targetTypes = when (route) {
-                AudioRoute.LOUDSPEAKER -> listOf(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER)
-                AudioRoute.EARPIECE -> listOf(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE)
-                AudioRoute.BLUETOOTH -> listOf(
-                    AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
-                    AudioDeviceInfo.TYPE_BLE_HEADSET,
-                    AudioDeviceInfo.TYPE_BLE_SPEAKER,
-                    AudioDeviceInfo.TYPE_HEARING_AID,
-                    AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
-                )
-            }
+         // Offload heavy AudioManager operations to background thread with serialization
+         scope.launch(Dispatchers.Default) {
+             routeMutex.withLock {
+                 audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
 
-            // If specific device ID is provided for Bluetooth routing, find that device
-            val target = if (route == AudioRoute.BLUETOOTH && targetDeviceId != null) {
-                available.firstOrNull { it.id == targetDeviceId && it.type in targetTypes }
-            } else {
-                available.firstOrNull { it.type in targetTypes }
-            }
+                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                     val available = audioManager.availableCommunicationDevices
+                     val targetTypes = when (route) {
+                         AudioRoute.LOUDSPEAKER -> listOf(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER)
+                         AudioRoute.EARPIECE -> listOf(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE)
+                         AudioRoute.BLUETOOTH -> listOf(
+                             AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                             AudioDeviceInfo.TYPE_BLE_HEADSET,
+                             AudioDeviceInfo.TYPE_BLE_SPEAKER,
+                             AudioDeviceInfo.TYPE_HEARING_AID,
+                             AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+                         )
+                     }
 
-            val setSuccess = if (target != null) {
-                if (audioManager.communicationDevice?.id == target.id) {
-                    true // Already active, skip redundant OS call
-                } else {
-                    audioManager.setCommunicationDevice(target)
-                }
-            } else {
-                false
-            }
+                     // If specific device ID is provided for Bluetooth routing, find that device
+                     val target = if (route == AudioRoute.BLUETOOTH && targetDeviceId != null) {
+                         available.firstOrNull { it.id == targetDeviceId && it.type in targetTypes }
+                     } else {
+                         available.firstOrNull { it.type in targetTypes }
+                     }
 
-            when (route) {
-                AudioRoute.LOUDSPEAKER -> {
-                    try { audioManager.stopBluetoothSco() } catch (_: Exception) {}
-                    try { audioManager.isBluetoothScoOn = false } catch (_: Exception) {}
-                    try { audioManager.isSpeakerphoneOn = true } catch (_: Exception) {}
-                    if (!setSuccess) {
-                        audioManager.clearCommunicationDevice()
-                    }
-                }
-                AudioRoute.EARPIECE -> {
-                    try { audioManager.stopBluetoothSco() } catch (_: Exception) {}
-                    try { audioManager.isBluetoothScoOn = false } catch (_: Exception) {}
-                    try { audioManager.isSpeakerphoneOn = false } catch (_: Exception) {}
-                    if (!setSuccess) {
-                        audioManager.clearCommunicationDevice()
-                    }
-                }
-                AudioRoute.BLUETOOTH -> {
-                    try { audioManager.isSpeakerphoneOn = false } catch (_: Exception) {}
-                    try { 
-                        if (!audioManager.isBluetoothScoOn) {
-                            audioManager.startBluetoothSco() 
-                            audioManager.isBluetoothScoOn = true
-                        }
-                    } catch (_: Exception) {}
-                    
-                    if (!setSuccess) {
-                        Log.w(TAG, "Bluetooth route requested but no communication Bluetooth device found")
-                    }
-                }
-            }
+                     val setSuccess = if (target != null) {
+                         if (audioManager.communicationDevice?.id == target.id) {
+                             true // Already active, skip redundant OS call
+                         } else {
+                             audioManager.setCommunicationDevice(target)
+                         }
+                     } else {
+                         false
+                     }
 
-            val activeType = audioManager.communicationDevice?.type
-            Log.i(
-                TAG,
-                "applyAudioRoute[$source]: route=$route, target=${target?.type}, targetDeviceId=$targetDeviceId, setSuccess=$setSuccess, active=$activeType, available=${available.joinToString(prefix = "[", postfix = "]") { it.type.toString() }}"
-            )
-            return
-        }
+                     when (route) {
+                         AudioRoute.LOUDSPEAKER -> {
+                             try { audioManager.stopBluetoothSco() } catch (_: Exception) {}
+                             try { audioManager.isBluetoothScoOn = false } catch (_: Exception) {}
+                             try { audioManager.isSpeakerphoneOn = true } catch (_: Exception) {}
+                             if (!setSuccess) {
+                                 audioManager.clearCommunicationDevice()
+                             }
+                         }
+                         AudioRoute.EARPIECE -> {
+                             try { audioManager.stopBluetoothSco() } catch (_: Exception) {}
+                             try { audioManager.isBluetoothScoOn = false } catch (_: Exception) {}
+                             try { audioManager.isSpeakerphoneOn = false } catch (_: Exception) {}
+                             if (!setSuccess) {
+                                 audioManager.clearCommunicationDevice()
+                             }
+                         }
+                         AudioRoute.BLUETOOTH -> {
+                             try { audioManager.isSpeakerphoneOn = false } catch (_: Exception) {}
+                             try { 
+                                 if (!audioManager.isBluetoothScoOn) {
+                                     audioManager.startBluetoothSco()
+                                     audioManager.isBluetoothScoOn = true
+                                 }
+                             } catch (_: Exception) {}
+                             
+                             if (!setSuccess) {
+                                 Log.w(TAG, "Bluetooth route requested but no communication Bluetooth device found")
+                             }
+                         }
+                     }
 
-        when (route) {
-            AudioRoute.LOUDSPEAKER -> {
-                try { audioManager.stopBluetoothSco() } catch (_: Exception) {}
-                try { audioManager.isBluetoothScoOn = false } catch (_: Exception) {}
-                try { audioManager.isSpeakerphoneOn = true } catch (_: Exception) {}
-            }
-            AudioRoute.EARPIECE -> {
-                try { audioManager.stopBluetoothSco() } catch (_: Exception) {}
-                try { audioManager.isBluetoothScoOn = false } catch (_: Exception) {}
-                try { audioManager.isSpeakerphoneOn = false } catch (_: Exception) {}
-            }
-            AudioRoute.BLUETOOTH -> {
-                try { audioManager.isSpeakerphoneOn = false } catch (_: Exception) {}
-                try { 
-                    if (!audioManager.isBluetoothScoOn) {
-                        audioManager.startBluetoothSco() 
-                        audioManager.isBluetoothScoOn = true
-                    }
-                } catch (_: Exception) {}
-            }
-        }
-        Log.i(TAG, "applyAudioRoute[$source]: route=$route (legacy API path)")
-    }
+                     val activeType = audioManager.communicationDevice?.type
+                     Log.i(
+                         TAG,
+                         "applyAudioRoute[$source]: route=$route, target=${target?.type}, targetDeviceId=$targetDeviceId, setSuccess=$setSuccess, active=$activeType, available=${available.joinToString(prefix = "[", postfix = "]") { it.type.toString() }}"
+                     )
+                     return@launch
+                 }
+
+                 when (route) {
+                     AudioRoute.LOUDSPEAKER -> {
+                         try { audioManager.stopBluetoothSco() } catch (_: Exception) {}
+                         try { audioManager.isBluetoothScoOn = false } catch (_: Exception) {}
+                         try { audioManager.isSpeakerphoneOn = true } catch (_: Exception) {}
+                     }
+                     AudioRoute.EARPIECE -> {
+                         try { audioManager.stopBluetoothSco() } catch (_: Exception) {}
+                         try { audioManager.isBluetoothScoOn = false } catch (_: Exception) {}
+                         try { audioManager.isSpeakerphoneOn = false } catch (_: Exception) {}
+                     }
+                     AudioRoute.BLUETOOTH -> {
+                         try { audioManager.isSpeakerphoneOn = false } catch (_: Exception) {}
+                         try { 
+                             if (!audioManager.isBluetoothScoOn) {
+                                 audioManager.startBluetoothSco()
+                                 audioManager.isBluetoothScoOn = true
+                             }
+                         } catch (_: Exception) {}
+                     }
+                 }
+                 Log.i(TAG, "applyAudioRoute[$source]: route=$route (legacy API path)")
+             }
+         }
+     }
 
     fun feedReceivedPacket(originId: Byte, flag: Byte, payload: ByteArray) {
         nativeFeedReceivedPacket(originId, flag, payload)
