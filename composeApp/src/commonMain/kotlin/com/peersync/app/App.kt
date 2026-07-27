@@ -1,24 +1,26 @@
 package com.peersync.app
 
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.Color
 import com.peersync.app.model.ConnectionState
 import com.peersync.app.model.MediaAction
 import com.peersync.app.model.SessionInfo
 import com.peersync.app.model.AudioRoute
+import com.peersync.app.model.AudioDeviceModel
 import com.peersync.app.navigation.PeerSyncNavGraph
 import com.peersync.app.model.DiscoveredSession
 import com.peersync.app.ui.settings.SettingsScreen
 
-// Color Palette - Material 3 Theme
-private val PrimaryColor = Color(0xFF92dce5)           // Frosted Blue
-private val SecondaryColor = Color(0xFF7c7c7c)         // Grey
-private val BackgroundColor = Color(0xFFeee5e9)        // Lavender Blush
-private val SurfaceColor = Color(0xFFeee5e9)           // Lavender Blush (same as background)
-private val ErrorColor = Color(0xFFd64933)             // Burnt Tangerine
-private val OnColor = Color(0xFF000000)                // Black (for all On* colors)
+// Color Palette - Material 3 Dark Theme
+private val PrimaryColor = Color(0xFF4DD4E0)           // Lighter Cyan for Dark Theme
+private val SecondaryColor = Color(0xFFB0B0B0)         // Light Grey for Dark Theme
+private val TertiaryColor = Color(0xFF92dce5)          // Frosted Blue
+private val BackgroundColor = Color(0xFF0F1419)        // Very Dark Background
+private val SurfaceColor = Color(0xFF1A1F28)           // Dark Surface
+private val ErrorColor = Color(0xFFFF7B6B)             // Bright Red for visibility on dark bg
+private val OnColor = Color(0xFFFFFFFF)                // White (for all On* colors)
 
 @Composable
 fun App(
@@ -30,6 +32,8 @@ fun App(
     audioRoute: AudioRoute = AudioRoute.LOUDSPEAKER,
     peerVolumes: Map<Byte, Float> = emptyMap(),
     speedTestResult: String = "",
+    availableBluetoothDevices: List<AudioDeviceModel> = emptyList(),
+    selectedBluetoothDeviceId: Int? = null,
     locationPermissionGranted: Boolean = false,
     microphonePermissionGranted: Boolean = false,
     cameraPermissionGranted: Boolean = false,
@@ -47,6 +51,7 @@ fun App(
     onSelectMusicRequest: () -> Unit = {},
     onToggleMicMute: (Boolean) -> Unit = {},
     onSelectAudioRoute: (AudioRoute) -> Unit = {},
+    onSelectBluetoothDevice: (Int) -> Unit = {},
     onSetPeerVolume: (Byte, Float) -> Unit = { _, _ -> },
     onSetLocalMusicVolume: (Float) -> Unit = {},
     onVolumeStep: () -> Unit = {},
@@ -56,10 +61,11 @@ fun App(
 ) {
     var showSettings by remember { mutableStateOf(false) }
     
-    // Custom Material 3 Color Scheme
-    val customColorScheme = lightColorScheme(
+    // Custom Material 3 Color Scheme - Dark Theme
+    val customColorScheme = darkColorScheme(
         primary = PrimaryColor,
         secondary = SecondaryColor,
+        tertiary = TertiaryColor,
         background = BackgroundColor,
         surface = SurfaceColor,
         error = ErrorColor,
@@ -97,6 +103,8 @@ fun App(
                 audioRoute = audioRoute,
                 peerVolumes = peerVolumes,
                 speedTestResult = speedTestResult,
+                availableBluetoothDevices = availableBluetoothDevices,
+                selectedBluetoothDeviceId = selectedBluetoothDeviceId,
                 onCreateSession = onCreateSession,
                 onJoinSession = onJoinSession,
                 onDisconnect = onDisconnect,
@@ -104,6 +112,7 @@ fun App(
                 onSelectMusicRequest = onSelectMusicRequest,
                 onToggleMicMute = onToggleMicMute,
                 onSelectAudioRoute = onSelectAudioRoute,
+                onSelectBluetoothDevice = onSelectBluetoothDevice,
                 onSetPeerVolume = onSetPeerVolume,
                 onSetLocalMusicVolume = onSetLocalMusicVolume,
                 onVolumeStep = onVolumeStep,

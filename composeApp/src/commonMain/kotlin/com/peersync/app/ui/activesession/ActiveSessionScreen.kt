@@ -20,10 +20,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.peersync.app.model.AudioRoute
+import com.peersync.app.model.AudioDeviceModel
 import com.peersync.app.model.MediaAction
 import com.peersync.app.model.PeerDevice
 import com.peersync.app.model.SessionInfo
@@ -41,11 +43,14 @@ fun ActiveSessionScreen(
     audioRoute: AudioRoute,
     peerVolumes: Map<Byte, Float>,
     speedTestResult: String = "",
+    availableBluetoothDevices: List<AudioDeviceModel> = emptyList(),
+    selectedBluetoothDeviceId: Int? = null,
     onDisconnect: () -> Unit,
     onMediaControl: (MediaAction) -> Unit,
     onSelectMusicRequest: () -> Unit,
     onToggleMicMute: (Boolean) -> Unit,
     onSelectAudioRoute: (AudioRoute) -> Unit,
+    onSelectBluetoothDevice: (Int) -> Unit = {},
     onSetPeerVolume: (Byte, Float) -> Unit,
     onSetLocalMusicVolume: (Float) -> Unit,
     onVolumeStep: () -> Unit,
@@ -53,6 +58,7 @@ fun ActiveSessionScreen(
     onOpenSettings: () -> Unit = {}
 ) {
     var showQrCodeDialog by remember { mutableStateOf(false) }
+    var showBluetoothDeviceDropdown by remember { mutableStateOf(false) }
     
     Scaffold(
         topBar = {
@@ -104,7 +110,7 @@ fun ActiveSessionScreen(
             val members = sessionInfo?.members ?: emptyList()
             if (members.isNotEmpty()) {
                 LazyVerticalGrid(
-                    columns = GridCells.Adaptive(minSize = 150.dp),
+                    columns = GridCells.Adaptive(minSize = 120.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier
@@ -273,6 +279,44 @@ fun ActiveSessionScreen(
                             }
                         }
                         
+                        // Bluetooth Device Selection Dropdown
+                        if (audioRoute == AudioRoute.BLUETOOTH && availableBluetoothDevices.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Box(modifier = Modifier.fillMaxWidth()) {
+                                Button(
+                                    onClick = { showBluetoothDeviceDropdown = !showBluetoothDeviceDropdown },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                                ) {
+                                    val selectedDeviceName = if (selectedBluetoothDeviceId != null) {
+                                        availableBluetoothDevices
+                                            .firstOrNull { it.id == selectedBluetoothDeviceId }
+                                            ?.productName ?: "Select Device"
+                                    } else {
+                                        "Select Bluetooth Device"
+                                    }
+                                    Text(selectedDeviceName, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                                
+                                // Dropdown menu
+                                DropdownMenu(
+                                    expanded = showBluetoothDeviceDropdown,
+                                    onDismissRequest = { showBluetoothDeviceDropdown = false },
+                                    modifier = Modifier.fillMaxWidth(0.9f)
+                                ) {
+                                    availableBluetoothDevices.forEach { device ->
+                                        DropdownMenuItem(
+                                            text = { Text(device.productName) },
+                                            onClick = {
+                                                onSelectBluetoothDevice(device.id)
+                                                showBluetoothDeviceDropdown = false
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        
                         // Show QR code button for host
                         if (isGroupOwner) {
                             Spacer(modifier = Modifier.height(12.dp))
@@ -308,10 +352,18 @@ fun ActiveSessionScreen(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceEvenly
                             ) {
-                                IconButton(onClick = { onMediaControl(MediaAction.SKIP_PREVIOUS) }) { Text("PREV") }
-                                IconButton(onClick = { onMediaControl(MediaAction.PLAY) }) { Text("PLAY") }
-                                IconButton(onClick = { onMediaControl(MediaAction.PAUSE) }) { Text("PAUSE") }
-                                IconButton(onClick = { onMediaControl(MediaAction.SKIP_NEXT) }) { Text("NEXT") }
+                                IconButton(onClick = { onMediaControl(MediaAction.SKIP_PREVIOUS) }) { 
+                                    Text("PREV", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) 
+                                }
+                                IconButton(onClick = { onMediaControl(MediaAction.PLAY) }) { 
+                                    Text("PLAY", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) 
+                                }
+                                IconButton(onClick = { onMediaControl(MediaAction.PAUSE) }) { 
+                                    Text("PAUSE", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) 
+                                }
+                                IconButton(onClick = { onMediaControl(MediaAction.SKIP_NEXT) }) { 
+                                    Text("NEXT", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) 
+                                }
                             }
                             Spacer(modifier = Modifier.height(8.dp))
                             var musicVolume by remember { mutableStateOf(1.0f) }

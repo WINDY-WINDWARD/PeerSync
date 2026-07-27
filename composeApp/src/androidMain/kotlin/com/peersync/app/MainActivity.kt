@@ -138,6 +138,8 @@ class MainActivity : ComponentActivity() {
             val audioRoute by engine.audioRoute.collectAsState()
             val peerVolumes by engine.peerVolumes.collectAsState()
             val speedTestResult by engine.speedTestResult.collectAsState()
+            val availableBluetoothDevices by engine.availableBluetoothDevices.collectAsState()
+            val selectedBluetoothDeviceId by engine.selectedBluetoothDeviceId.collectAsState()
             
             // Permission states
             val locPermissionGranted by remember { locationPermissionGranted }
@@ -155,6 +157,8 @@ class MainActivity : ComponentActivity() {
                 audioRoute = audioRoute,
                 peerVolumes = peerVolumes,
                 speedTestResult = speedTestResult,
+                availableBluetoothDevices = availableBluetoothDevices,
+                selectedBluetoothDeviceId = selectedBluetoothDeviceId,
                 locationPermissionGranted = locPermissionGranted,
                 microphonePermissionGranted = micPermissionGranted,
                 cameraPermissionGranted = camPermissionGranted,
@@ -200,6 +204,9 @@ class MainActivity : ComponentActivity() {
                 },
                 onSelectAudioRoute = { route ->
                     engine.setAudioRoute(route)
+                },
+                onSelectBluetoothDevice = { deviceId ->
+                    engine.selectBluetoothDevice(deviceId)
                 },
                 onSetPeerVolume = { originId, volume ->
                     engine.setPeerVolume(originId, volume)

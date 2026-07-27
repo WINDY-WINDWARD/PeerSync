@@ -8,6 +8,7 @@ import com.peersync.app.model.SessionInfo
 import com.peersync.app.ui.activesession.ActiveSessionScreen
 import com.peersync.app.ui.sessionlist.SessionListScreen
 import com.peersync.app.model.AudioRoute
+import com.peersync.app.model.AudioDeviceModel
 
 @Composable
 fun PeerSyncNavGraph(
@@ -19,6 +20,8 @@ fun PeerSyncNavGraph(
     audioRoute: AudioRoute,
     peerVolumes: Map<Byte, Float>,
     speedTestResult: String = "",
+    availableBluetoothDevices: List<AudioDeviceModel> = emptyList(),
+    selectedBluetoothDeviceId: Int? = null,
     onCreateSession: (String) -> Unit,
     onJoinSession: (DiscoveredSession, String) -> Unit,
     onDisconnect: () -> Unit,
@@ -26,6 +29,7 @@ fun PeerSyncNavGraph(
     onSelectMusicRequest: () -> Unit,
     onToggleMicMute: (Boolean) -> Unit,
     onSelectAudioRoute: (AudioRoute) -> Unit,
+    onSelectBluetoothDevice: (Int) -> Unit = {},
     onSetPeerVolume: (Byte, Float) -> Unit,
     onSetLocalMusicVolume: (Float) -> Unit,
     onVolumeStep: () -> Unit,
@@ -44,11 +48,14 @@ fun PeerSyncNavGraph(
                 audioRoute = audioRoute,
                 peerVolumes = peerVolumes,
                 speedTestResult = speedTestResult,
+                availableBluetoothDevices = availableBluetoothDevices,
+                selectedBluetoothDeviceId = selectedBluetoothDeviceId,
                 onDisconnect = onDisconnect,
                 onMediaControl = onMediaControl,
                 onSelectMusicRequest = onSelectMusicRequest,
                 onToggleMicMute = onToggleMicMute,
                 onSelectAudioRoute = onSelectAudioRoute,
+                onSelectBluetoothDevice = onSelectBluetoothDevice,
                 onSetPeerVolume = onSetPeerVolume,
                 onSetLocalMusicVolume = onSetLocalMusicVolume,
                 onVolumeStep = onVolumeStep,

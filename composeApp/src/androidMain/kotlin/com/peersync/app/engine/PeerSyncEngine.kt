@@ -64,6 +64,12 @@ class PeerSyncEngine private constructor(private val context: Context) {
     private val _audioRoute = MutableStateFlow(AudioRoute.LOUDSPEAKER)
     val audioRoute: StateFlow<AudioRoute> = _audioRoute.asStateFlow()
 
+    private val _availableBluetoothDevices = MutableStateFlow<List<AudioDeviceModel>>(emptyList())
+    val availableBluetoothDevices: StateFlow<List<AudioDeviceModel>> = _availableBluetoothDevices.asStateFlow()
+
+    private val _selectedBluetoothDeviceId = MutableStateFlow<Int?>(null)
+    val selectedBluetoothDeviceId: StateFlow<Int?> = _selectedBluetoothDeviceId.asStateFlow()
+
     private val _peerVolumes = MutableStateFlow<Map<Byte, Float>>(emptyMap())
     val peerVolumes: StateFlow<Map<Byte, Float>> = _peerVolumes.asStateFlow()
 
@@ -588,6 +594,21 @@ class PeerSyncEngine private constructor(private val context: Context) {
     fun setAudioRoute(route: AudioRoute) {
         _audioRoute.value = route
         audioBridge.setAudioRoute(route)
+        
+        // When Bluetooth is selected, fetch available devices
+        if (route == AudioRoute.BLUETOOTH) {
+            _availableBluetoothDevices.value = audioBridge.getAvailableBluetoothDevices()
+        } else {
+            // Clear Bluetooth devices when switching to other routes
+            _availableBluetoothDevices.value = emptyList()
+            _selectedBluetoothDeviceId.value = null
+        }
+    }
+
+    fun selectBluetoothDevice(deviceId: Int) {
+        _selectedBluetoothDeviceId.value = deviceId
+        // Apply audio route to the specific Bluetooth device
+        audioBridge.setAudioRoute(AudioRoute.BLUETOOTH, deviceId)
     }
 
     fun requestMediaHost() {
