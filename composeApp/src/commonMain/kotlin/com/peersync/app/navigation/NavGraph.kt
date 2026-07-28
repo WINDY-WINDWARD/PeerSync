@@ -34,7 +34,6 @@ fun PeerSyncNavGraph(
     onSetLocalMusicVolume: (Float) -> Unit,
     onVolumeStep: () -> Unit,
     onRescan: () -> Unit,
-    onRunSpeedTest: (Byte) -> Unit = {},
     onScanQrCodeRequest: () -> Unit = {},
     onOpenSettings: () -> Unit = {}
 ) {
@@ -60,7 +59,6 @@ fun PeerSyncNavGraph(
                 onSetPeerVolume = onSetPeerVolume,
                 onSetLocalMusicVolume = onSetLocalMusicVolume,
                 onVolumeStep = onVolumeStep,
-                onRunSpeedTest = onRunSpeedTest,
                 onOpenSettings = onOpenSettings
             )
         }

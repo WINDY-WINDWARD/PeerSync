@@ -56,7 +56,6 @@ fun App(
     onSetLocalMusicVolume: (Float) -> Unit = {},
     onVolumeStep: () -> Unit = {},
     onRescan: () -> Unit = {},
-    onRunSpeedTest: (Byte) -> Unit = {},
     onScanQrCodeRequest: () -> Unit = {}
 ) {
     var showSettings by remember { mutableStateOf(false) }
@@ -117,7 +116,6 @@ fun App(
                 onSetLocalMusicVolume = onSetLocalMusicVolume,
                 onVolumeStep = onVolumeStep,
                 onRescan = onRescan,
-                onRunSpeedTest = onRunSpeedTest,
                 onScanQrCodeRequest = onScanQrCodeRequest,
                 onOpenSettings = { showSettings = true }
              )

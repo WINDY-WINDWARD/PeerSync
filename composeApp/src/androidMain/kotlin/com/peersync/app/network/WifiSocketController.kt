@@ -133,10 +133,11 @@ class WifiSocketController(private val context: Context) {
     private val endpointToOriginId = mutableMapOf<String, Byte>()
     private val originIdToEndpoint = mutableMapOf<Byte, String>()
     
-    // Client-side state
-    private var clientSocket: Socket? = null
-    private var hostSocketHandler: ClientSocketHandler? = null
-    private var boundNetwork: Network? = null
+     // Client-side state
+     private var clientSocket: Socket? = null
+     private var hostSocketHandler: ClientSocketHandler? = null
+     private var boundNetwork: Network? = null
+     private var isNetworkCallbackRegistered = false
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
             Log.d(TAG, "Wi-Fi network available: $network")
@@ -288,29 +289,42 @@ class WifiSocketController(private val context: Context) {
         }
     }
     
-    /**
-     * Internal: Request network connection using WifiNetworkSpecifier.
-     */
-    private fun requestNetworkConnection(ssid: String, pin: String) {
-        try {
-            val specifier = android.net.wifi.WifiNetworkSpecifier.Builder()
-                .setSsid(ssid)
-                .setWpa2Passphrase(pin)
-                .build()
-            
-            val request = NetworkRequest.Builder()
-                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .setNetworkSpecifier(specifier)
-                .build()
-            
-            connectivityManager.requestNetwork(request, networkCallback)
-            Log.d(TAG, "Network request submitted for $ssid")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error requesting network: ${e.message}")
-            _wifiSocketState.value = WifiSocketState.Error("Network error: ${e.message}")
-        }
-    }
+     /**
+      * Internal: Request network connection using WifiNetworkSpecifier.
+      */
+     private fun requestNetworkConnection(ssid: String, pin: String) {
+         try {
+             // Unregister callback if already registered to prevent duplicate registration
+             if (isNetworkCallbackRegistered) {
+                 try {
+                     connectivityManager.unregisterNetworkCallback(networkCallback)
+                     Log.d(TAG, "Unregistered previous network callback")
+                 } catch (e: Exception) {
+                     Log.w(TAG, "Error unregistering previous callback: ${e.message}")
+                 }
+                 isNetworkCallbackRegistered = false
+             }
+             
+             val specifier = android.net.wifi.WifiNetworkSpecifier.Builder()
+                 .setSsid(ssid)
+                 .setWpa2Passphrase(pin)
+                 .build()
+             
+             val request = NetworkRequest.Builder()
+                 .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                 .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                 .setNetworkSpecifier(specifier)
+                 .build()
+             
+             connectivityManager.requestNetwork(request, networkCallback)
+             isNetworkCallbackRegistered = true
+             Log.d(TAG, "Network request submitted for $ssid")
+         } catch (e: Exception) {
+             Log.e(TAG, "Error requesting network: ${e.message}")
+             _wifiSocketState.value = WifiSocketState.Error("Network error: ${e.message}")
+             isNetworkCallbackRegistered = false
+         }
+     }
 
     /**
      * Internal: Connect socket to host once Wi-Fi is available.
@@ -339,22 +353,26 @@ class WifiSocketController(private val context: Context) {
     /**
      * Disconnect client from host.
      */
-     private fun disconnectFromHost() {
-        scope.launch {
-            try {
-                clientSocket?.close()
-                clientSocket = null
-                hostSocketHandler?.stop()
-                hostSocketHandler = null
-                connectivityManager.unregisterNetworkCallback(networkCallback)
-                _wifiSocketState.value = WifiSocketState.Idle
-                _endpointDisconnected.emit("host")
-                Log.d(TAG, "Disconnected from host")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error disconnecting: ${e.message}")
-            }
-        }
-    }
+      private fun disconnectFromHost() {
+         scope.launch {
+             try {
+                 clientSocket?.close()
+                 clientSocket = null
+                 hostSocketHandler?.stop()
+                 hostSocketHandler = null
+                 if (isNetworkCallbackRegistered) {
+                     connectivityManager.unregisterNetworkCallback(networkCallback)
+                     isNetworkCallbackRegistered = false
+                     Log.d(TAG, "Unregistered network callback")
+                 }
+                 _wifiSocketState.value = WifiSocketState.Idle
+                 _endpointDisconnected.emit("host")
+                 Log.d(TAG, "Disconnected from host")
+             } catch (e: Exception) {
+                 Log.e(TAG, "Error disconnecting: ${e.message}")
+             }
+         }
+     }
 
     /**
      * Stop hosting.
@@ -729,18 +747,22 @@ class WifiSocketController(private val context: Context) {
                     hostSocketHandler = null
                     clientSocket?.close()
                     clientSocket = null
-                    
-                    // Cancel Wi-Fi network request
-                    try {
-                        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-                        connectivityManager.unregisterNetworkCallback(networkCallback)
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Error unregistering network callback: ${e.message}")
-                    }
-                    
-                    boundNetwork = null
-                    _wifiSocketState.value = WifiSocketState.Idle
-                    Log.d(TAG, "Disconnected from host")
+                     
+                     // Cancel Wi-Fi network request
+                     if (isNetworkCallbackRegistered) {
+                         try {
+                             val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                             connectivityManager.unregisterNetworkCallback(networkCallback)
+                             isNetworkCallbackRegistered = false
+                             Log.d(TAG, "Unregistered network callback")
+                         } catch (e: Exception) {
+                             Log.w(TAG, "Error unregistering network callback: ${e.message}")
+                         }
+                     }
+                     
+                     boundNetwork = null
+                     _wifiSocketState.value = WifiSocketState.Idle
+                     Log.d(TAG, "Disconnected from host")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error during disconnect: ${e.message}")

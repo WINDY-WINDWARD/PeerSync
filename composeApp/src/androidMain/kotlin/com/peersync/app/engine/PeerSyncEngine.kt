@@ -86,6 +86,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
 
     // Speed test tracking: timestamp -> payload size for calculating RTT
     private val pendingSpeedTests = ConcurrentHashMap<Long, Int>()
+    private var speedTestJob: Job? = null
 
     // Session state management (replaces TcpControlPlane logic)
     private var nextOriginId: Byte = 1  // Host: next ID to assign to clients
@@ -699,6 +700,10 @@ class PeerSyncEngine private constructor(private val context: Context) {
         wifiSocketController.disconnect()
         PeerSyncService.stopService(context)
         
+        // Cancel speed test loop
+        speedTestJob?.cancel()
+        speedTestJob = null
+        
         // Reset session state
         isHost = false
         hostEndpointId = null
@@ -734,7 +739,11 @@ class PeerSyncEngine private constructor(private val context: Context) {
       }
 
      private fun startAutoSpeedTest() {
-         scope.launch {
+         // Cancel any existing speed test job to prevent duplicate loops
+         speedTestJob?.cancel()
+         
+         // Launch a new speed test job and track it
+         speedTestJob = scope.launch {
              while (isActive && _sessionInfo.value != null) {
                  val session = _sessionInfo.value
                  if (session != null) {

@@ -63,7 +63,6 @@ fun ActiveSessionScreen(
     onSetPeerVolume: (Byte, Float) -> Unit,
     onSetLocalMusicVolume: (Float) -> Unit,
     onVolumeStep: () -> Unit,
-    onRunSpeedTest: (Byte) -> Unit = {},
     onOpenSettings: () -> Unit = {}
 ) {
     var showQrCodeDialog by remember { mutableStateOf(false) }

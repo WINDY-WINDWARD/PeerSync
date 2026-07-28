@@ -232,9 +232,6 @@ class MainActivity : ComponentActivity() {
                 onRescan = {
                     engine.rescan()
                 },
-                onRunSpeedTest = { originId ->
-                    engine.runSpeedTest(originId)
-                },
                 onScanQrCodeRequest = {
                     qrScannerLauncher.launch(ScanOptions().apply {
                         setOrientationLocked(false)
