@@ -44,14 +44,19 @@ class PeerSyncEngine private constructor(private val context: Context) {
 
     val wifiSocketController = WifiSocketController(context)
     val audioBridge = AudioBridge(context)
-    val mediaHostManager = MediaHostManager(context) { payload ->
-        // Suspend until C++ has enough free space in the 16kHz mix buffer.
-        // This perfectly locks decoding pacing to the hardware audio clock!
-        while (audioBridge.getLocalMusicFreeSpace() < payload.size) {
-            kotlinx.coroutines.delay(10)
-        }
-        audioBridge.feedLocalMusic(payload)
-    }
+    val mediaHostManager = MediaHostManager(
+        context,
+        { payload ->
+            // Suspend until C++ has enough free space in the 16kHz mix buffer.
+            // This perfectly locks decoding pacing to the hardware audio clock!
+            while (audioBridge.getLocalMusicFreeSpace() < payload.size) {
+                kotlinx.coroutines.delay(10)
+            }
+            audioBridge.feedLocalMusic(payload)
+        },
+        { audioBridge.getLocalMusicFreeSpace() },
+        { audioBridge.clearLocalMusicBuffers() }
+    )
 
     private val _connectionState = MutableStateFlow(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
@@ -82,6 +87,9 @@ class PeerSyncEngine private constructor(private val context: Context) {
 
     private val _peerLatencies = MutableStateFlow<Map<Byte, Long>>(emptyMap())
     val peerLatencies: StateFlow<Map<Byte, Long>> = _peerLatencies.asStateFlow()
+
+    // Music player state proxy from MediaHostManager
+    val musicPlayerState: StateFlow<MusicPlayerState> get() = mediaHostManager.musicPlayerState
 
     private var myDeviceName: String = "PeerDevice"
     private var currentPin: String = ""
@@ -288,44 +296,97 @@ class PeerSyncEngine private constructor(private val context: Context) {
         val validation = PinManager.validatePin(request.pin, currentSession.pin, request.deviceId)
         when (validation) {
             is PinValidationResult.Success -> {
-                // Assign next origin ID
-                val assignedId = synchronized(this) { nextOriginId++ }
                 val newClient = senderEndpointId
+                
+                // Check for rejoin: look for existing non-GO member with the same device name
+                val existingMember = currentSession.members.firstOrNull { 
+                    it.deviceName == request.deviceName && !it.isGroupOwner 
+                }
+                
+                if (existingMember != null) {
+                    // REJOIN PATH: Device is reconnecting with new endpoint
+                    val reusingOriginId = existingMember.originId
+                    Log.d(TAG, "Device ${request.deviceName} is rejoining (reusing originId=$reusingOriginId, old endpoint=${existingMember.deviceId}, new endpoint=$newClient)")
+                    
+                    // Step 1: Remove stale endpoint mapping FIRST (so late disconnect of old socket becomes no-op)
+                    // Only close old endpoint if it's different from the new one (paranoia check: same socket re-join)
+                    if (existingMember.deviceId != newClient) {
+                        connectedClientEndpoints.remove(existingMember.deviceId)
+                        wifiSocketController.unregisterEndpoint(existingMember.deviceId)
+                        
+                        // Step 2: Proactively close the zombie socket on the host
+                        wifiSocketController.closeClientEndpoint(existingMember.deviceId)
+                    }
+                    
+                    // Step 3: Register new endpoint with reused originId
+                    wifiSocketController.registerEndpointOriginId(newClient, reusingOriginId)
+                    connectedClientEndpoints[newClient] = reusingOriginId
+                    
+                    // Step 4: Update member's endpoint ID to the new connection
+                    val updatedMembers = currentSession.members.map { member ->
+                        if (member.originId == reusingOriginId) {
+                            member.copy(deviceId = newClient)
+                        } else {
+                            member
+                        }
+                    }
+                    val updatedSession = currentSession.copy(members = updatedMembers)
+                    _sessionInfo.value = updatedSession
+                    
+                    // Step 5: Send JoinResponse with the reused originId
+                    val response = ControlMessage.JoinResponse(
+                        success = true,
+                        assignedOriginId = reusingOriginId,
+                        sessionName = currentSession.sessionName,
+                        targetDeviceId = request.deviceId
+                    )
+                    wifiSocketController.sendControlMessage(response, newClient)
+                    
+                    // Step 6: Broadcast updated member list to all clients
+                    val memberListMsg = ControlMessage.MemberListUpdate(updatedSession)
+                    wifiSocketController.broadcastControlMessage(memberListMsg)
+                    
+                    Log.d(TAG, "Rejoin successful for ${request.deviceName} with reused originId=$reusingOriginId")
+                } else {
+                    // FRESH JOIN PATH: New device joining the session
+                    // Assign next origin ID
+                    val assignedId = synchronized(this) { nextOriginId++ }
 
-                Log.d(TAG, "PIN validated! Assigning originId=$assignedId to ${request.deviceName}")
+                    Log.d(TAG, "PIN validated! Assigning originId=$assignedId to ${request.deviceName}")
 
-                // Register the endpoint
-                wifiSocketController.registerEndpointOriginId(newClient, assignedId)
-                connectedClientEndpoints[newClient] = assignedId
+                    // Register the endpoint
+                    wifiSocketController.registerEndpointOriginId(newClient, assignedId)
+                    connectedClientEndpoints[newClient] = assignedId
 
-                // Create new peer
-                val newPeer = PeerDevice(
-                    originId = assignedId,
-                    deviceId = newClient,
-                    deviceName = request.deviceName,
-                    isGroupOwner = false
-                )
+                    // Create new peer
+                    val newPeer = PeerDevice(
+                        originId = assignedId,
+                        deviceId = newClient,
+                        deviceName = request.deviceName,
+                        isGroupOwner = false
+                    )
 
-                // Update session with new member
-                val updatedMembers = currentSession.members.toMutableList()
-                updatedMembers.add(newPeer)
-                val updatedSession = currentSession.copy(members = updatedMembers)
-                _sessionInfo.value = updatedSession
+                    // Update session with new member
+                    val updatedMembers = currentSession.members.toMutableList()
+                    updatedMembers.add(newPeer)
+                    val updatedSession = currentSession.copy(members = updatedMembers)
+                    _sessionInfo.value = updatedSession
 
-                // Send JoinResponse to client with targetDeviceId to route to the correct device
-                val response = ControlMessage.JoinResponse(
-                    success = true,
-                    assignedOriginId = assignedId,
-                    sessionName = currentSession.sessionName,
-                    targetDeviceId = request.deviceId
-                )
-                wifiSocketController.sendControlMessage(response, newClient)
+                    // Send JoinResponse to client with targetDeviceId to route to the correct device
+                    val response = ControlMessage.JoinResponse(
+                        success = true,
+                        assignedOriginId = assignedId,
+                        sessionName = currentSession.sessionName,
+                        targetDeviceId = request.deviceId
+                    )
+                    wifiSocketController.sendControlMessage(response, newClient)
 
-                // Broadcast updated member list to all clients
-                val memberListMsg = ControlMessage.MemberListUpdate(updatedSession)
-                wifiSocketController.broadcastControlMessage(memberListMsg)
+                    // Broadcast updated member list to all clients
+                    val memberListMsg = ControlMessage.MemberListUpdate(updatedSession)
+                    wifiSocketController.broadcastControlMessage(memberListMsg)
 
-                Log.d(TAG, "Sent JoinResponse and MemberListUpdate to all endpoints")
+                    Log.d(TAG, "Sent JoinResponse and MemberListUpdate to all endpoints")
+                }
             }
             is PinValidationResult.InvalidPin -> {
                 Log.w(TAG, "Invalid PIN from ${request.deviceName}. Attempts remaining: ${validation.attemptsRemaining}")
@@ -416,9 +477,15 @@ class PeerSyncEngine private constructor(private val context: Context) {
                 } else {
                     // Client got disconnected from host - Initiate 5-minute fallback reconnection
                     if (endpointId == "host" || endpointId == hostEndpointId) {
-                        // Guard: skip reconnection if user manually disconnected
+                        // Guard: skip if user manually disconnected
                         if (manualDisconnectRequested) {
                             Log.d(TAG, "Manual disconnect — skipping reconnection fallback")
+                            return@collect
+                        }
+                        
+                        // Guard: skip if already attempting to reconnect (prevents duplicate fallback loops)
+                        if (_connectionState.value == ConnectionState.Reconnecting) {
+                            Log.d(TAG, "Already in Reconnecting state, skipping duplicate fallback loop")
                             return@collect
                         }
                         
@@ -693,7 +760,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
     }
 
     fun setLocalMusicVolume(volume: Float) {
-        audioBridge.setLocalMusicGain(volume.coerceIn(0f, 3f))
+        audioBridge.setLocalMusicGain(volume.coerceIn(0f, MAX_MUSIC_VOLUME))
     }
 
     fun setAudioRoute(route: AudioRoute) {
@@ -750,6 +817,12 @@ class PeerSyncEngine private constructor(private val context: Context) {
     fun handleMediaAction(action: MediaAction) {
         if (_myOriginId.value == sessionInfo.value?.mediaHostId) {
             mediaHostManager.handleMediaAction(action)
+        }
+    }
+
+    fun seekMusicTo(positionMs: Long) {
+        if (_myOriginId.value == sessionInfo.value?.mediaHostId) {
+            mediaHostManager.seekTo(positionMs)
         }
     }
 

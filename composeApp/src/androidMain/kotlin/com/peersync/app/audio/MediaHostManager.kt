@@ -4,11 +4,13 @@ import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
 import com.peersync.app.model.AudioPacketHeader
 import com.peersync.app.model.MediaAction
+import com.peersync.app.model.MusicPlayerState
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -16,7 +18,9 @@ import kotlinx.coroutines.flow.asStateFlow
 
 class MediaHostManager(
     private val context: Context,
-    private val onFeedLocalMusic: suspend (ByteArray) -> Unit
+    private val onFeedLocalMusic: suspend (ByteArray) -> Unit,
+    private val getLocalMusicFreeSpaceBytes: () -> Int = { 0 },
+    private val onClearLocalMusicBuffers: () -> Unit = {}
 ) {
 
     companion object {
@@ -27,6 +31,9 @@ class MediaHostManager(
         // Keeping this chunk size small (1392 = 348 stereo int16 frames) guarantees 
         // extremely low latency through the TCP socket pipeline.
         private const val MAX_FRAME_PAYLOAD = 1392
+        
+        // Minimum interval (ms) between position state updates (throttle position emissions)
+        private const val POSITION_UPDATE_THROTTLE_MS = 250
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -39,11 +46,17 @@ class MediaHostManager(
     private val _currentTrackUri = MutableStateFlow<Uri?>(null)
     val currentTrackUri: StateFlow<Uri?> = _currentTrackUri.asStateFlow()
 
+    private val _musicPlayerState = MutableStateFlow(MusicPlayerState())
+    val musicPlayerState: StateFlow<MusicPlayerState> = _musicPlayerState.asStateFlow()
+
     private val playlist = mutableListOf<Uri>()
     private var currentTrackIndex: Int = -1
 
     private var myOriginId: Byte = 0
     private var musicSeqIndex: UShort = 0u
+    
+    // Last position state update timestamp (for throttling)
+    private var lastPositionUpdateMs: Long = 0L
 
     fun setOriginId(originId: Byte) {
         this.myOriginId = originId
@@ -65,26 +78,37 @@ class MediaHostManager(
             }
 
             Log.i(TAG, "Loaded music folder with ${tracks.size} track(s)")
-            playTrackAt(0)
+            playTrackAt(0, startOffsetUs = 0L)
         }
     }
 
-    private fun playTrackAt(index: Int) {
-        playbackJob?.cancel()
-        playbackJob = scope.launch {
-            var targetIndex = index
+     private fun playTrackAt(index: Int, startOffsetUs: Long = 0L, autoplay: Boolean = true) {
+         playbackJob?.cancel()
+         
+         playbackJob = scope.launch {
+             // Clear buffers at the start of the new coroutine to ensure
+             // the old (cancelled) job doesn't race with buffer clearing
+             onClearLocalMusicBuffers()
+             
+             var targetIndex = index
+             var trackOffsetUs = startOffsetUs
 
-            while (isActive) {
-                val uri = synchronized(stateLock) {
-                    if (targetIndex !in playlist.indices) return@launch
-                    currentTrackIndex = targetIndex
-                    playlist[targetIndex]
-                }
+             while (isActive) {
+                 val uri = synchronized(stateLock) {
+                     if (targetIndex !in playlist.indices) return@launch
+                     currentTrackIndex = targetIndex
+                     playlist[targetIndex]
+                 }
 
-                _currentTrackUri.value = uri
-                _isPlaying.value = true
+                 _currentTrackUri.value = uri
+                 if (autoplay) {
+                     _isPlaying.value = true
+                 }
 
-                val completedNaturally = decodeAndStreamAudio(uri)
+                val completedNaturally = decodeAndStreamAudio(uri, trackOffsetUs)
+                // Reset offset after first track in sequence
+                trackOffsetUs = 0L
+                
                 if (!completedNaturally || !isActive) {
                     break
                 }
@@ -96,6 +120,12 @@ class MediaHostManager(
 
                 if (nextIndex < 0) {
                     _isPlaying.value = false
+                    // Clear current track on playlist end so resume restarts from beginning
+                    _currentTrackUri.value = null
+                    _musicPlayerState.value = _musicPlayerState.value.copy(
+                        isPlaying = false,
+                        positionMs = _musicPlayerState.value.durationMs
+                    )
                     Log.d(TAG, "Reached end of playlist")
                     break
                 }
@@ -134,6 +164,7 @@ class MediaHostManager(
 
     fun pausePlayback() {
         _isPlaying.value = false
+        _musicPlayerState.value = _musicPlayerState.value.copy(isPlaying = false)
     }
 
     fun resumePlayback() {
@@ -145,22 +176,48 @@ class MediaHostManager(
             }
         }
         _isPlaying.value = true
+        _musicPlayerState.value = _musicPlayerState.value.copy(isPlaying = true)
     }
 
-    fun stopPlayback(clearPlaylist: Boolean = false) {
-        _isPlaying.value = false
-        playbackJob?.cancel()
-        playbackJob = null
-        musicSeqIndex = 0u
+     fun seekTo(positionMs: Long) {
+         if (_currentTrackUri.value == null) return
+         val durationMs = _musicPlayerState.value.durationMs
+         if (durationMs <= 0) return
+         
+         val clamped = positionMs.coerceIn(0, durationMs)
+         val seekOffsetUs = clamped * 1000L
+         
+         // Preserve current play state across seek
+         val wasPlaying = _isPlaying.value
+         
+         // Update state immediately to reflect seek target
+         _musicPlayerState.value = _musicPlayerState.value.copy(positionMs = clamped)
+         
+         // Restart decode from the seek position with offset parameter
+         // Pass wasPlaying to preserve autoplay state across seek
+         val trackIndex = synchronized(stateLock) { currentTrackIndex }
+         playTrackAt(trackIndex, startOffsetUs = seekOffsetUs, autoplay = wasPlaying)
+     }
 
-        if (clearPlaylist) {
-            synchronized(stateLock) {
-                playlist.clear()
-                currentTrackIndex = -1
-            }
-            _currentTrackUri.value = null
-        }
-    }
+     fun stopPlayback(clearPlaylist: Boolean = false) {
+         _isPlaying.value = false
+         playbackJob?.cancel()
+         playbackJob = null
+         musicSeqIndex = 0u
+         lastPositionUpdateMs = 0L
+         
+         // Clear native ring buffers to prevent stale audio from draining after stop
+         onClearLocalMusicBuffers()
+
+         if (clearPlaylist) {
+             synchronized(stateLock) {
+                 playlist.clear()
+                 currentTrackIndex = -1
+             }
+             _currentTrackUri.value = null
+             _musicPlayerState.value = MusicPlayerState()
+         }
+     }
 
     private fun buildPlaylistFromFolder(folderUri: Uri): List<Uri> {
         val root = DocumentFile.fromTreeUri(context, folderUri) ?: return emptyList()
@@ -189,9 +246,10 @@ class MediaHostManager(
             .map { it.uri }
     }
 
-    private suspend fun decodeAndStreamAudio(uri: Uri): Boolean {
+    private suspend fun decodeAndStreamAudio(uri: Uri, startOffsetUs: Long = 0L): Boolean {
         var extractor: MediaExtractor? = null
         var decoder: MediaCodec? = null
+        var retriever: MediaMetadataRetriever? = null
         var reachedEnd = false
 
         try {
@@ -202,6 +260,7 @@ class MediaHostManager(
             var format: MediaFormat? = null
             var sampleRate = 44100
             var channelCount = 2
+            var durationUs: Long = 0
 
             for (i in 0 until extractor.trackCount) {
                 val f = extractor.getTrackFormat(i)
@@ -219,11 +278,61 @@ class MediaHostManager(
                 return false
             }
 
+            // Extract metadata
+            var title = ""
+            var artist = ""
+            try {
+                retriever = MediaMetadataRetriever()
+                retriever.setDataSource(context, uri)
+                title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE) ?: ""
+                artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST) ?: ""
+                val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                if (!durationStr.isNullOrBlank()) {
+                    durationUs = durationStr.toLongOrNull()?.let { it * 1000 } ?: 0L
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to extract metadata: ${e.message}")
+            }
+
+            // Fallback to filename if no title
+            if (title.isBlank()) {
+                val docFile = DocumentFile.fromSingleUri(context, uri)
+                title = docFile?.name ?: "Unknown Track"
+            }
+
+            // Fallback to format duration if no metadata duration
+            if (durationUs == 0L && format.containsKey(MediaFormat.KEY_DURATION)) {
+                durationUs = format.getLong(MediaFormat.KEY_DURATION)
+            }
+
+            val playlistSize = synchronized(stateLock) { playlist.size }
+            val trackIdx = synchronized(stateLock) { currentTrackIndex }
+            val durationMs = durationUs / 1000
+
+            // If seeking, start at seek position; otherwise at 0
+            val initialPositionMs = if (startOffsetUs > 0) startOffsetUs / 1000 else 0
+            _musicPlayerState.value = MusicPlayerState(
+                isPlaying = true,
+                trackTitle = title,
+                trackArtist = artist,
+                durationMs = durationMs,
+                positionMs = initialPositionMs,
+                trackIndex = trackIdx,
+                trackCount = playlistSize
+            )
+            lastPositionUpdateMs = System.currentTimeMillis()
+
             extractor.selectTrack(trackIndex)
             val mime = format.getString(MediaFormat.KEY_MIME) ?: ""
             decoder = MediaCodec.createDecoderByType(mime)
             decoder.configure(format, null, null, 0)
             decoder.start()
+
+            // Seek to offset if needed (for resuming from a seek position)
+            if (startOffsetUs > 0) {
+                extractor.seekTo(startOffsetUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                Log.d(TAG, "Seeking to ${startOffsetUs / 1000}ms")
+            }
 
             val bufferInfo = MediaCodec.BufferInfo()
             var isEOS = false
@@ -293,6 +402,25 @@ class MediaHostManager(
                         
                         // Push to audioBridge and suspend if full
                         onFeedLocalMusic(outBytes)
+                        
+                        // Update position with throttling
+                        val nowMs = System.currentTimeMillis()
+                        if (nowMs - lastPositionUpdateMs >= POSITION_UPDATE_THROTTLE_MS) {
+                            // Calculate actual playback position: PTS minus buffer lead
+                            val ptsMs = bufferInfo.presentationTimeUs / 1000
+                            val freeSamples = getLocalMusicFreeSpaceBytes()
+                            // RingBuffer capacity is 32000 int16 samples (64000 bytes) at 16kHz
+                            // 1 sample = 1/16000 second = 0.0625ms
+                            // bufferedSamples / 16 = milliseconds
+                            val bufferedMs = (32000 - freeSamples) / 16
+                            val displayPositionMs = (ptsMs - bufferedMs).coerceIn(0, durationMs)
+                            
+                            _musicPlayerState.value = _musicPlayerState.value.copy(
+                                positionMs = displayPositionMs,
+                                isPlaying = _isPlaying.value
+                            )
+                            lastPositionUpdateMs = nowMs
+                        }
                     }
                 } else if (outputBufIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     val outFormat = decoder.outputFormat
@@ -317,8 +445,7 @@ class MediaHostManager(
         } finally {
             try { decoder?.stop(); decoder?.release() } catch (_: Exception) {}
             try { extractor?.release() } catch (_: Exception) {}
+            try { retriever?.release() } catch (_: Exception) {}
         }
-
-        return false
     }
 }

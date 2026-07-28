@@ -19,6 +19,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -34,10 +39,13 @@ import androidx.compose.ui.unit.sp
 import com.peersync.app.model.AudioRoute
 import com.peersync.app.model.AudioDeviceModel
 import com.peersync.app.model.MediaAction
+import com.peersync.app.model.MusicPlayerState
+import com.peersync.app.model.MAX_MUSIC_VOLUME
 import com.peersync.app.model.PeerDevice
 import com.peersync.app.model.SessionInfo
 import com.peersync.app.model.ConnectionState
 import com.peersync.app.ui.util.generateQrBitmap
+import com.peersync.app.ui.util.formatTrackTime
 
 import kotlin.math.roundToInt
 
@@ -54,9 +62,11 @@ fun ActiveSessionScreen(
     peerLatencies: Map<Byte, Long> = emptyMap(),
     availableBluetoothDevices: List<AudioDeviceModel> = emptyList(),
     selectedBluetoothDeviceId: Int? = null,
+    musicPlayerState: MusicPlayerState = MusicPlayerState(),
     onDisconnect: () -> Unit,
     onMediaControl: (MediaAction) -> Unit,
     onSelectMusicRequest: () -> Unit,
+    onSeekMusic: (Long) -> Unit = {},
     onToggleMicMute: (Boolean) -> Unit,
     onSelectAudioRoute: (AudioRoute) -> Unit,
     onSelectBluetoothDevice: (Int) -> Unit = {},
@@ -340,7 +350,7 @@ fun ActiveSessionScreen(
                     }
                 }
 
-                // Shared Music Controls Card (for owner)
+                // Shared Music Player Card (for owner only)
                 if (myOriginId == 0.toByte()) {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
@@ -348,7 +358,7 @@ fun ActiveSessionScreen(
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                     ) {
                         Column(modifier = Modifier.padding(16.dp)) {
-                            // Clickable Header
+                            // Header with collapse/expand
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -357,55 +367,183 @@ fun ActiveSessionScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("Shared Music Controls", fontWeight = FontWeight.Bold)
+                                Row(
+                                    modifier = Modifier.weight(1f),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.MusicNote,
+                                        contentDescription = "Music"
+                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            "Shared Music",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 14.sp
+                                        )
+                                        if (musicPlayerState.trackCount > 0) {
+                                            Text(
+                                                musicPlayerState.trackTitle.ifBlank { "Loading..." },
+                                                fontSize = 12.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                                            )
+                                        }
+                                    }
+                                }
                                 Icon(
                                     imageVector = if (isMusicControlsExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
                                     contentDescription = if (isMusicControlsExpanded) "Collapse" else "Expand"
                                 )
                             }
-                            
-                            // Animated Content
+
+                            // Expanded content
                             AnimatedVisibility(
                                 visible = isMusicControlsExpanded,
                                 enter = expandVertically(),
                                 exit = shrinkVertically()
                             ) {
-                                Column {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    // Now Playing Info (only show if playlist loaded)
+                                    if (musicPlayerState.trackCount > 0) {
+                                        HorizontalDivider()
+                                        
+                                        // Track info
+                                        Column(modifier = Modifier.fillMaxWidth()) {
+                                            Text(
+                                                musicPlayerState.trackTitle.ifBlank { "Unknown Track" },
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 14.sp,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            if (musicPlayerState.trackArtist.isNotBlank()) {
+                                                Text(
+                                                    musicPlayerState.trackArtist,
+                                                    fontSize = 12.sp,
+                                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                            Text(
+                                                "Track ${musicPlayerState.trackIndex + 1} of ${musicPlayerState.trackCount}",
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                            )
+                                        }
+
+                                         // Seek bar and time (only if duration known)
+                                         if (musicPlayerState.durationMs > 0) {
+                                             var dragPosition by remember(musicPlayerState.trackIndex) { mutableStateOf<Long?>(null) }
+                                             val effectivePosition = dragPosition ?: musicPlayerState.positionMs
+                                             val remaining = musicPlayerState.durationMs - effectivePosition
+                                            
+                                            Column(modifier = Modifier.fillMaxWidth()) {
+                                                Slider(
+                                                    value = effectivePosition.toFloat(),
+                                                    onValueChange = { dragPosition = it.toLong() },
+                                                    onValueChangeFinished = {
+                                                        dragPosition?.let { onSeekMusic(it) }
+                                                        dragPosition = null
+                                                    },
+                                                    valueRange = 0f..musicPlayerState.durationMs.toFloat(),
+                                                    modifier = Modifier.fillMaxWidth()
+                                                )
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(horizontal = 4.dp),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text(
+                                                        formatTrackTime(effectivePosition),
+                                                        fontSize = 11.sp,
+                                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                                                    )
+                                                    Text(
+                                                        "-${formatTrackTime(remaining)}",
+                                                        fontSize = 11.sp,
+                                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        // Transport controls
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            IconButton(
+                                                onClick = { onMediaControl(MediaAction.SKIP_PREVIOUS) },
+                                                modifier = Modifier.size(40.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.SkipPrevious,
+                                                    contentDescription = "Previous"
+                                                )
+                                            }
+                                            
+                                            // Play/Pause toggle
+                                            FilledTonalButton(
+                                                onClick = {
+                                                    onMediaControl(if (musicPlayerState.isPlaying) MediaAction.PAUSE else MediaAction.PLAY)
+                                                },
+                                                modifier = Modifier.size(56.dp),
+                                                shape = CircleShape,
+                                                contentPadding = PaddingValues(0.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = if (musicPlayerState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                                    contentDescription = if (musicPlayerState.isPlaying) "Pause" else "Play",
+                                                    modifier = Modifier.size(28.dp)
+                                                )
+                                            }
+                                            
+                                            IconButton(
+                                                onClick = { onMediaControl(MediaAction.SKIP_NEXT) },
+                                                modifier = Modifier.size(40.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.SkipNext,
+                                                    contentDescription = "Next"
+                                                )
+                                            }
+                                         }
+                                     }
+
+                                     HorizontalDivider()
+
+                                     // Folder selection button
                                     Button(
                                         onClick = onSelectMusicRequest,
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
                                         Text("Select Music Folder")
                                     }
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceEvenly
-                                    ) {
-                                        IconButton(onClick = { onMediaControl(MediaAction.SKIP_PREVIOUS) }) { 
-                                            Text("PREV", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) 
-                                        }
-                                        IconButton(onClick = { onMediaControl(MediaAction.PLAY) }) { 
-                                            Text("PLAY", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) 
-                                        }
-                                        IconButton(onClick = { onMediaControl(MediaAction.PAUSE) }) { 
-                                            Text("PAUSE", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) 
-                                        }
-                                        IconButton(onClick = { onMediaControl(MediaAction.SKIP_NEXT) }) { 
-                                            Text("NEXT", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) 
-                                        }
-                                    }
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    var musicVolume by remember { mutableStateOf(1.0f) }
-                                    Text("Music Volume: ${(musicVolume * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
+
+                                     // Music volume control
+                                     var musicVolume by remember { mutableStateOf(1.0f) }
+                                     Text(
+                                         "Music Volume: ${(musicVolume * 100).toInt()}%",
+                                         style = MaterialTheme.typography.bodySmall
+                                     )
                                     Slider(
                                         value = musicVolume,
-                                        onValueChange = { 
+                                        onValueChange = {
                                             musicVolume = it
                                             onSetLocalMusicVolume(it)
                                         },
-                                        valueRange = 0f..3f,
-                                        steps = 59,
+                                        valueRange = 0f..MAX_MUSIC_VOLUME,
+                                        steps = 19,
                                         modifier = Modifier.fillMaxWidth()
                                     )
                                 }
@@ -413,6 +551,7 @@ fun ActiveSessionScreen(
                         }
                     }
                 }
+
                 
                 // Add bottom spacer to prevent content from being hidden
                 Spacer(modifier = Modifier.height(16.dp))
