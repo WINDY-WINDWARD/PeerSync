@@ -467,3 +467,4 @@ fun ActiveSessionScreen(
         )
     }
 }
+}
