@@ -72,6 +72,7 @@ fun ActiveSessionScreen(
     
     Scaffold(
         containerColor = Color.Transparent,
+        contentColor = MaterialTheme.colorScheme.onBackground,
         topBar = {
             TopAppBar(
                 title = {
@@ -175,7 +176,7 @@ fun ActiveSessionScreen(
                                 Text(
                                     text = if (peer.isGroupOwner) "GO" else "Peer ID ${peer.originId}",
                                     fontSize = 12.sp,
-                                    color = Color.Gray
+                                    color = Color.LightGray
                                 )
                                 
                                 // Display latency if available

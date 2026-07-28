@@ -38,6 +38,7 @@ fun SessionListScreen(
 
     Scaffold(
         containerColor = Color.Transparent,
+        contentColor = MaterialTheme.colorScheme.onBackground,
         topBar = {
             TopAppBar(
                 title = { Text("PeerSync Intercom", fontWeight = FontWeight.Bold) },
@@ -113,7 +114,7 @@ fun SessionListScreen(
                 ) {
                     Text(
                         "Scanning for nearby sessions via Wi-Fi Direct...",
-                        color = Color.Gray
+                        color = Color.LightGray
                     )
                 }
             } else {
@@ -138,7 +139,7 @@ fun SessionListScreen(
                             ) {
                                 Column {
                                     Text(session.sessionName, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                                    Text("Host: ${session.deviceName}", fontSize = 12.sp, color = Color.Gray)
+                                    Text("Host: ${session.deviceName}", fontSize = 12.sp, color = Color.LightGray)
                                 }
                                 Button(
                                     onClick = { selectedSession = session },
