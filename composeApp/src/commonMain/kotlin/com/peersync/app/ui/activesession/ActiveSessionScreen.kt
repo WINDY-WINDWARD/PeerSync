@@ -512,12 +512,12 @@ fun ActiveSessionScreen(
                     )
                 }
             },
-            confirmButton = {
-                Button(onClick = { showQrCodeDialog = false }) {
-                    Text("Close")
-                }
-            }
-        )
-    }
-}
+             confirmButton = {
+                 Button(onClick = { showQrCodeDialog = false }) {
+                     Text("Close")
+                 }
+             }
+         )
+     }
+ }
 }

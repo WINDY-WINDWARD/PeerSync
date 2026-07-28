@@ -91,14 +91,30 @@ bool AudioEngine::start(int sessionId) {
     AAudioStreamBuilder_setChannelCount(builder, 1);
     AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_I16);
     AAudioStreamBuilder_setSessionId(builder, sessionId);
-    AAudioStreamBuilder_setDataCallback(builder, inCallback, this);
-    AAudioStreamBuilder_setErrorCallback(builder, errorCallback, this);
+     AAudioStreamBuilder_setDataCallback(builder, inCallback, this);
+     AAudioStreamBuilder_setErrorCallback(builder, errorCallback, this);
 
-    if (AAudioStreamBuilder_openStream(builder, &inputStream_) != AAUDIO_OK) {
-        LOGE("Failed to open AAudio input stream");
-        AAudioStreamBuilder_delete(builder);
-        return false;
-    }
+     int preferredInputId = preferredInputDeviceId_.load();
+     if (preferredInputId > 0) {
+         AAudioStreamBuilder_setDeviceId(builder, preferredInputId);
+     }
+
+     if (AAudioStreamBuilder_openStream(builder, &inputStream_) != AAUDIO_OK) {
+         LOGE("Failed to open AAudio input stream");
+         // If a preferred device was requested but failed, retry with AAUDIO_UNSPECIFIED
+         if (preferredInputId > 0) {
+             LOGD("Retrying input stream without preferred device ID");
+             AAudioStreamBuilder_setDeviceId(builder, AAUDIO_UNSPECIFIED);
+             if (AAudioStreamBuilder_openStream(builder, &inputStream_) != AAUDIO_OK) {
+                 LOGE("Failed to open AAudio input stream (retry without device ID)");
+                 AAudioStreamBuilder_delete(builder);
+                 return false;
+             }
+         } else {
+             AAudioStreamBuilder_delete(builder);
+             return false;
+         }
+     }
     inputChannelCount_ = AAudioStream_getChannelCount(inputStream_);
     inputSampleRate_ = AAudioStream_getSampleRate(inputStream_);
 
@@ -111,15 +127,34 @@ bool AudioEngine::start(int sessionId) {
     AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_I16);
     AAudioStreamBuilder_setUsage(builder, AAUDIO_USAGE_VOICE_COMMUNICATION);
     AAudioStreamBuilder_setContentType(builder, AAUDIO_CONTENT_TYPE_SPEECH);
-    AAudioStreamBuilder_setDataCallback(builder, outCallback, this);
-    AAudioStreamBuilder_setErrorCallback(builder, errorCallback, this);
+     AAudioStreamBuilder_setDataCallback(builder, outCallback, this);
+     AAudioStreamBuilder_setErrorCallback(builder, errorCallback, this);
 
-    if (AAudioStreamBuilder_openStream(builder, &outputStream_) != AAUDIO_OK) {
-        LOGE("Failed to open AAudio output stream");
-        AAudioStream_close(inputStream_);
-        AAudioStreamBuilder_delete(builder);
-        return false;
-    }
+     int preferredOutputId = preferredOutputDeviceId_.load();
+     if (preferredOutputId > 0) {
+         AAudioStreamBuilder_setDeviceId(builder, preferredOutputId);
+     }
+
+     if (AAudioStreamBuilder_openStream(builder, &outputStream_) != AAUDIO_OK) {
+         LOGE("Failed to open AAudio output stream");
+         // If a preferred device was requested but failed, retry with AAUDIO_UNSPECIFIED
+         if (preferredOutputId > 0) {
+             LOGD("Retrying output stream without preferred device ID");
+             AAudioStreamBuilder_setDeviceId(builder, AAUDIO_UNSPECIFIED);
+             if (AAudioStreamBuilder_openStream(builder, &outputStream_) != AAUDIO_OK) {
+                 LOGE("Failed to open AAudio output stream (retry without device ID)");
+                 AAudioStream_close(inputStream_);
+                 inputStream_ = nullptr;
+                 AAudioStreamBuilder_delete(builder);
+                 return false;
+             }
+         } else {
+             AAudioStream_close(inputStream_);
+             inputStream_ = nullptr;
+             AAudioStreamBuilder_delete(builder);
+             return false;
+         }
+     }
     outputChannelCount_ = AAudioStream_getChannelCount(outputStream_);
     outputSampleRate_ = AAudioStream_getSampleRate(outputStream_);
 
@@ -173,6 +208,12 @@ void AudioEngine::stop() {
     captureAccumulator_.clear();
 
     LOGI("AAudio Engine stopped");
+}
+
+void AudioEngine::setDeviceIds(int inputDeviceId, int outputDeviceId) {
+    preferredInputDeviceId_.store(inputDeviceId);
+    preferredOutputDeviceId_.store(outputDeviceId);
+    LOGD("Device IDs set: input=%d, output=%d", inputDeviceId, outputDeviceId);
 }
 
 aaudio_data_callback_result_t AudioEngine::onAudioInput(const int16_t* audioData, int32_t numFrames) {

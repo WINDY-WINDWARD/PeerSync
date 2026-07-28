@@ -2,9 +2,11 @@ package com.peersync.app.engine
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.net.Uri
+import android.os.Build
 import android.util.Log
 import com.peersync.app.model.*
 import com.peersync.app.network.*
@@ -13,6 +15,9 @@ import com.peersync.app.security.PinValidationResult
 import com.peersync.app.service.PeerSyncService
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 
 import com.peersync.app.audio.AudioBridge
 import com.peersync.app.audio.MediaHostManager
@@ -87,6 +92,12 @@ class PeerSyncEngine private constructor(private val context: Context) {
     // Speed test tracking: timestamp -> payload size for calculating RTT
     private val pendingSpeedTests = ConcurrentHashMap<Long, Int>()
     private var speedTestJob: Job? = null
+
+    // Audio recovery: serializes stream restart operations to prevent coroutine conflicts
+    private val audioRestartMutex = Mutex()
+
+    // Disconnect flag: prevents reconnection fallback when user manually disconnects
+    @Volatile private var manualDisconnectRequested = false
 
     // Session state management (replaces TcpControlPlane logic)
     private var nextOriginId: Byte = 1  // Host: next ID to assign to clients
@@ -405,6 +416,12 @@ class PeerSyncEngine private constructor(private val context: Context) {
                 } else {
                     // Client got disconnected from host - Initiate 5-minute fallback reconnection
                     if (endpointId == "host" || endpointId == hostEndpointId) {
+                        // Guard: skip reconnection if user manually disconnected
+                        if (manualDisconnectRequested) {
+                            Log.d(TAG, "Manual disconnect — skipping reconnection fallback")
+                            return@collect
+                        }
+                        
                         Log.w(TAG, "Host disconnected! Initiating 5-minute fallback reconnection...")
                         
                         // Set reconnecting state
@@ -529,22 +546,69 @@ class PeerSyncEngine private constructor(private val context: Context) {
     private fun observeStreamErrors() {
         scope.launch {
             audioBridge.streamErrors.collect { errorMessage ->
-                Log.e(TAG, "AUDIO ENGINE STREAM ERROR: $errorMessage — restarting audio")
-                audioBridge.stop()
-                kotlinx.coroutines.delay(300)
+                Log.e(TAG, "AUDIO ENGINE STREAM ERROR: $errorMessage — attempting recovery")
                 
-                // If we are routing to Bluetooth, wait for the OS SCO hardware handshake to finish
-                if (_audioRoute.value == AudioRoute.BLUETOOTH) {
-                    try {
-                        Log.d(TAG, "Waiting for Bluetooth SCO handshake before restarting audio...")
-                        audioBridge.scoState.first { it == AudioManager.SCO_AUDIO_STATE_CONNECTED }
-                        Log.d(TAG, "SCO handshake complete, restarting audio stream")
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Failed to wait for SCO handshake: ${e.message}")
+                audioRestartMutex.withLock {
+                    // Gate: only recover in connected states or reconnecting
+                    val connState = connectionState.value
+                    if (connState != ConnectionState.ConnectedGroupOwner && 
+                        connState != ConnectionState.ConnectedClient && 
+                        connState != ConnectionState.Reconnecting) {
+                        Log.d(TAG, "Stream error in disconnected state — ignoring recovery attempt")
+                        return@withLock
+                    }
+
+                    // Coalesce: skip if audio is already running (second error from same teardown after successful restart)
+                    if (audioBridge.isAudioRunning()) {
+                        Log.d(TAG, "Audio already running — skipping redundant restart")
+                        return@withLock
+                    }
+
+                    // Bounded settle wait for Bluetooth
+                    if (_audioRoute.value == AudioRoute.BLUETOOTH) {
+                        try {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                val selectedId = _selectedBluetoothDeviceId.value
+                                val BT_TYPES = setOf(
+                                    AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                                    AudioDeviceInfo.TYPE_BLE_HEADSET,
+                                    AudioDeviceInfo.TYPE_BLE_SPEAKER,
+                                    AudioDeviceInfo.TYPE_HEARING_AID,
+                                    AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+                                )
+                                withTimeoutOrNull(2500L) {
+                                    audioBridge.communicationDevice.first { dev ->
+                                        dev != null && (selectedId == null || dev.id == selectedId) && dev.type in BT_TYPES
+                                    }
+                                } ?: Log.w(TAG, "Bluetooth device settle timeout — continuing anyway")
+                            } else {
+                                // API 30: wait for SCO connection state
+                                withTimeoutOrNull(2500L) {
+                                    audioBridge.scoState.first { it == AudioManager.SCO_AUDIO_STATE_CONNECTED }
+                                } ?: Log.w(TAG, "SCO handshake timeout — continuing anyway")
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Error during Bluetooth settle wait: ${e.message}")
+                        }
+                    }
+                    delay(300)
+
+                    // Bounded retry: up to 3 attempts
+                    var restartSuccess = false
+                    for (attempt in 1..3) {
+                        val success = audioBridge.restartStreams()
+                        if (success) {
+                            Log.i(TAG, "Audio stream restart succeeded on attempt $attempt")
+                            restartSuccess = true
+                            break
+                        }
+                        Log.w(TAG, "Audio stream restart failed on attempt $attempt — retrying...")
+                        delay(500)
+                    }
+                    if (!restartSuccess) {
+                        Log.e(TAG, "Audio stream restart failed after 3 attempts")
                     }
                 }
-                
-                audioBridge.start()
             }
         }
     }
@@ -584,6 +648,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
     }
 
     fun createSession(sessionName: String, localDeviceName: String) {
+        manualDisconnectRequested = false
         this.myDeviceName = localDeviceName
         val pin = PinManager.generatePin()
         this.currentPin = pin
@@ -598,6 +663,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
     }
 
     fun joinSession(session: DiscoveredSession, pin: String, localDeviceName: String) {
+        manualDisconnectRequested = false
         this.myDeviceName = localDeviceName
         this.currentPin = pin
         this.activeSessionName = session.deviceAddress
@@ -646,6 +712,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
 
     fun selectBluetoothDevice(deviceId: Int) {
         _selectedBluetoothDeviceId.value = deviceId
+        _audioRoute.value = AudioRoute.BLUETOOTH
         // Apply audio route to the specific Bluetooth device
         audioBridge.setAudioRoute(AudioRoute.BLUETOOTH, deviceId)
     }
@@ -687,6 +754,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
     }
 
     private fun restoreHostSession() {
+        manualDisconnectRequested = false
         this.currentPin = activePin
         Log.i(TAG, "Restoring session '$activeSessionName' with cached PIN: $activePin")
         PeerSyncService.startService(context)
@@ -695,6 +763,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
     }
 
     fun disconnect() {
+        manualDisconnectRequested = true
         mediaHostManager.stopPlayback(clearPlaylist = true)
         audioBridge.stop()
         wifiSocketController.disconnect()
@@ -703,6 +772,10 @@ class PeerSyncEngine private constructor(private val context: Context) {
         // Cancel speed test loop
         speedTestJob?.cancel()
         speedTestJob = null
+        
+        // Clear session credentials to prevent auto-reconnect
+        activeSessionName = ""
+        activePin = ""
         
         // Reset session state
         isHost = false

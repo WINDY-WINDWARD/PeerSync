@@ -20,6 +20,9 @@ public:
     bool start(int sessionId);
     void stop();
 
+    void setDeviceIds(int inputDeviceId, int outputDeviceId);
+    bool isRunning() const { return isRunning_.load(); }
+
     void feedReceivedPacket(uint8_t originId, uint8_t flag, const uint8_t* payload, size_t payloadSize);
     
     // Feed locally decoded 16kHz mono music to be mixed into the microphone stream
@@ -62,6 +65,8 @@ private:
     std::atomic<bool> isRunning_{false};
     std::atomic<uint8_t> myOriginId_{255}; // 255 = unset; set before audio starts
     std::atomic<bool> micMuted_{false};
+    std::atomic<int> preferredInputDeviceId_{0};
+    std::atomic<int> preferredOutputDeviceId_{0};
 
     AudioMixer mixer_;
     WebRtcVadEngine vad_;

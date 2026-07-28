@@ -180,4 +180,19 @@ Java_com_peersync_app_audio_AudioBridge_nativeSetPeerVolume(JNIEnv* env, jobject
     }
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_peersync_app_audio_AudioBridge_nativeSetDeviceIds(JNIEnv* env, jobject thiz, jint inputDeviceId, jint outputDeviceId) {
+    if (gAudioEngine) {
+        gAudioEngine->setDeviceIds(static_cast<int>(inputDeviceId), static_cast<int>(outputDeviceId));
+    }
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_peersync_app_audio_AudioBridge_nativeIsAudioRunning(JNIEnv* env, jobject thiz) {
+    if (gAudioEngine) {
+        return gAudioEngine->isRunning() ? JNI_TRUE : JNI_FALSE;
+    }
+    return JNI_FALSE;
+}
+
 }
