@@ -37,6 +37,7 @@ fun SessionListScreen(
     var pinInput by remember { mutableStateOf("") }
 
     Scaffold(
+        containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
                 title = { Text("PeerSync Intercom", fontWeight = FontWeight.Bold) },

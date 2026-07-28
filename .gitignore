@@ -11,3 +11,8 @@
 .cxx
 local.properties
 **/build/
+
+# Debug screenshots & one-off patch scripts
+/moto_*.png
+/s23_*.png
+/patch_*.sh

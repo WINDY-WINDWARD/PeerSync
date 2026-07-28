@@ -1,9 +1,19 @@
 package com.peersync.app
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.foundation.Image
+import peersync.composeapp.generated.resources.Res
+import peersync.composeapp.generated.resources.logo
+import org.jetbrains.compose.resources.painterResource
 import com.peersync.app.model.ConnectionState
 import com.peersync.app.model.MediaAction
 import com.peersync.app.model.SessionInfo
@@ -76,49 +86,66 @@ fun App(
     )
     
     MaterialTheme(colorScheme = customColorScheme) {
-        if (showSettings) {
-            // Show Settings Screen
-            SettingsScreen(
-                locationPermissionGranted = locationPermissionGranted,
-                microphonePermissionGranted = microphonePermissionGranted,
-                cameraPermissionGranted = cameraPermissionGranted,
-                notificationsPermissionGranted = notificationsPermissionGranted,
-                batteryOptimizationExempt = batteryOptimizationExempt,
-                onGrantLocationPermission = onGrantLocationPermission,
-                onGrantMicrophonePermission = onGrantMicrophonePermission,
-                onGrantCameraPermission = onGrantCameraPermission,
-                onGrantNotificationsPermission = onGrantNotificationsPermission,
-                onGrantBatteryOptimizationExemption = onGrantBatteryOptimizationExemption,
-                onBackPressed = { showSettings = false }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(BackgroundColor)
+        ) {
+            // Logo watermark - positioned behind all content
+            Image(
+                painter = painterResource(Res.drawable.logo),
+                contentDescription = "Logo watermark",
+                modifier = Modifier
+                    .fillMaxSize()
+                    .alpha(0.08f),
+                contentScale = ContentScale.Fit
             )
-        } else {
-            // Show Main Navigation Graph
-            PeerSyncNavGraph(
-                connectionState = connectionState,
-                discoveredSessions = discoveredSessions,
-                sessionInfo = sessionInfo,
-                myOriginId = myOriginId,
-                isMicMuted = isMicMuted,
-                audioRoute = audioRoute,
-                peerVolumes = peerVolumes,
-                peerLatencies = peerLatencies,
-                availableBluetoothDevices = availableBluetoothDevices,
-                selectedBluetoothDeviceId = selectedBluetoothDeviceId,
-                onCreateSession = onCreateSession,
-                onJoinSession = onJoinSession,
-                onDisconnect = onDisconnect,
-                onMediaControl = onMediaControl,
-                onSelectMusicRequest = onSelectMusicRequest,
-                onToggleMicMute = onToggleMicMute,
-                onSelectAudioRoute = onSelectAudioRoute,
-                onSelectBluetoothDevice = onSelectBluetoothDevice,
-                onSetPeerVolume = onSetPeerVolume,
-                onSetLocalMusicVolume = onSetLocalMusicVolume,
-                onVolumeStep = onVolumeStep,
-                onRescan = onRescan,
-                onScanQrCodeRequest = onScanQrCodeRequest,
-                onOpenSettings = { showSettings = true }
-             )
-         }
-     }
+
+            // Main content
+            if (showSettings) {
+                // Show Settings Screen
+                SettingsScreen(
+                    locationPermissionGranted = locationPermissionGranted,
+                    microphonePermissionGranted = microphonePermissionGranted,
+                    cameraPermissionGranted = cameraPermissionGranted,
+                    notificationsPermissionGranted = notificationsPermissionGranted,
+                    batteryOptimizationExempt = batteryOptimizationExempt,
+                    onGrantLocationPermission = onGrantLocationPermission,
+                    onGrantMicrophonePermission = onGrantMicrophonePermission,
+                    onGrantCameraPermission = onGrantCameraPermission,
+                    onGrantNotificationsPermission = onGrantNotificationsPermission,
+                    onGrantBatteryOptimizationExemption = onGrantBatteryOptimizationExemption,
+                    onBackPressed = { showSettings = false }
+                )
+            } else {
+                // Show Main Navigation Graph
+                PeerSyncNavGraph(
+                    connectionState = connectionState,
+                    discoveredSessions = discoveredSessions,
+                    sessionInfo = sessionInfo,
+                    myOriginId = myOriginId,
+                    isMicMuted = isMicMuted,
+                    audioRoute = audioRoute,
+                    peerVolumes = peerVolumes,
+                    peerLatencies = peerLatencies,
+                    availableBluetoothDevices = availableBluetoothDevices,
+                    selectedBluetoothDeviceId = selectedBluetoothDeviceId,
+                    onCreateSession = onCreateSession,
+                    onJoinSession = onJoinSession,
+                    onDisconnect = onDisconnect,
+                    onMediaControl = onMediaControl,
+                    onSelectMusicRequest = onSelectMusicRequest,
+                    onToggleMicMute = onToggleMicMute,
+                    onSelectAudioRoute = onSelectAudioRoute,
+                    onSelectBluetoothDevice = onSelectBluetoothDevice,
+                    onSetPeerVolume = onSetPeerVolume,
+                    onSetLocalMusicVolume = onSetLocalMusicVolume,
+                    onVolumeStep = onVolumeStep,
+                    onRescan = onRescan,
+                    onScanQrCodeRequest = onScanQrCodeRequest,
+                    onOpenSettings = { showSettings = true }
+                )
+            }
+        }
+    }
 }

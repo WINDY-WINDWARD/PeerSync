@@ -71,6 +71,7 @@ fun ActiveSessionScreen(
     var isMusicControlsExpanded by remember { mutableStateOf(false) }
     
     Scaffold(
+        containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
                 title = {
