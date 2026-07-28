@@ -1,7 +1,11 @@
 ﻿package com.peersync.app.ui.activesession
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -12,6 +16,8 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -62,6 +68,8 @@ fun ActiveSessionScreen(
 ) {
     var showQrCodeDialog by remember { mutableStateOf(false) }
     var showBluetoothDeviceDropdown by remember { mutableStateOf(false) }
+    var isAudioControlsExpanded by remember { mutableStateOf(false) }
+    var isMusicControlsExpanded by remember { mutableStateOf(false) }
     
     Scaffold(
         topBar = {
@@ -227,82 +235,105 @@ fun ActiveSessionScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
-                        Text("Audio Controls", fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
-                        
+                        // Clickable Header
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { isAudioControlsExpanded = !isAudioControlsExpanded }
+                                .padding(bottom = 8.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(if (isMicMuted) "Microphone Muted" else "Microphone Active")
-                            Switch(
-                                checked = isMicMuted,
-                                onCheckedChange = { onToggleMicMute(it) }
+                            Text("Audio Controls", fontWeight = FontWeight.Bold)
+                            Icon(
+                                imageVector = if (isAudioControlsExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                contentDescription = if (isAudioControlsExpanded) "Collapse" else "Expand"
                             )
                         }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Audio Route:", fontSize = 14.sp)
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                            horizontalArrangement = Arrangement.SpaceEvenly
-                        ) {
-                            AudioRoute.values().forEach { route ->
-                                FilterChip(
-                                    selected = audioRoute == route,
-                                    onClick = { onSelectAudioRoute(route) },
-                                    label = { Text(route.displayName) }
-                                )
-                            }
-                        }
                         
-                        // Bluetooth Device Selection Dropdown
-                        if (audioRoute == AudioRoute.BLUETOOTH && availableBluetoothDevices.isNotEmpty()) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Box(modifier = Modifier.fillMaxWidth()) {
-                                Button(
-                                    onClick = { showBluetoothDeviceDropdown = !showBluetoothDeviceDropdown },
+                        // Animated Content
+                        AnimatedVisibility(
+                            visible = isAudioControlsExpanded,
+                            enter = expandVertically(),
+                            exit = shrinkVertically()
+                        ) {
+                            Column {
+                                Row(
                                     modifier = Modifier.fillMaxWidth(),
-                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    val selectedDeviceName = if (selectedBluetoothDeviceId != null) {
-                                        availableBluetoothDevices
-                                            .firstOrNull { it.id == selectedBluetoothDeviceId }
-                                            ?.productName ?: "Select Device"
-                                    } else {
-                                        "Select Bluetooth Device"
-                                    }
-                                    Text(selectedDeviceName, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(if (isMicMuted) "Microphone Muted" else "Microphone Active")
+                                    Switch(
+                                        checked = isMicMuted,
+                                        onCheckedChange = { onToggleMicMute(it) }
+                                    )
                                 }
-                                
-                                // Dropdown menu
-                                DropdownMenu(
-                                    expanded = showBluetoothDeviceDropdown,
-                                    onDismissRequest = { showBluetoothDeviceDropdown = false },
-                                    modifier = Modifier.fillMaxWidth(0.9f)
+
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text("Audio Route:", fontSize = 14.sp)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceEvenly
                                 ) {
-                                    availableBluetoothDevices.forEach { device ->
-                                        DropdownMenuItem(
-                                            text = { Text(device.productName) },
-                                            onClick = {
-                                                onSelectBluetoothDevice(device.id)
-                                                showBluetoothDeviceDropdown = false
-                                            }
+                                    AudioRoute.values().forEach { route ->
+                                        FilterChip(
+                                            selected = audioRoute == route,
+                                            onClick = { onSelectAudioRoute(route) },
+                                            label = { Text(route.displayName) }
                                         )
                                     }
                                 }
-                            }
-                        }
-                        
-                        // Show QR code button for host
-                        if (isGroupOwner) {
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Button(
-                                onClick = { showQrCodeDialog = true },
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                            ) {
-                                Text("Show QR Code / PIN")
+                                
+                                // Bluetooth Device Selection Dropdown
+                                if (audioRoute == AudioRoute.BLUETOOTH && availableBluetoothDevices.isNotEmpty()) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Box(modifier = Modifier.fillMaxWidth()) {
+                                        Button(
+                                            onClick = { showBluetoothDeviceDropdown = !showBluetoothDeviceDropdown },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                                        ) {
+                                            val selectedDeviceName = if (selectedBluetoothDeviceId != null) {
+                                                availableBluetoothDevices
+                                                    .firstOrNull { it.id == selectedBluetoothDeviceId }
+                                                    ?.productName ?: "Select Device"
+                                            } else {
+                                                "Select Bluetooth Device"
+                                            }
+                                            Text(selectedDeviceName, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        }
+                                        
+                                        // Dropdown menu
+                                        DropdownMenu(
+                                            expanded = showBluetoothDeviceDropdown,
+                                            onDismissRequest = { showBluetoothDeviceDropdown = false },
+                                            modifier = Modifier.fillMaxWidth(0.9f)
+                                        ) {
+                                            availableBluetoothDevices.forEach { device ->
+                                                DropdownMenuItem(
+                                                    text = { Text(device.productName) },
+                                                    onClick = {
+                                                        onSelectBluetoothDevice(device.id)
+                                                        showBluetoothDeviceDropdown = false
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // Show QR code button for host
+                                if (isGroupOwner) {
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Button(
+                                        onClick = { showQrCodeDialog = true },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                                    ) {
+                                        Text("Show QR Code / PIN")
+                                    }
+                                }
                             }
                         }
                     }
@@ -316,45 +347,68 @@ fun ActiveSessionScreen(
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                     ) {
                         Column(modifier = Modifier.padding(16.dp)) {
-                            Text("Shared Music Controls", fontWeight = FontWeight.Bold)
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Button(
-                                onClick = onSelectMusicRequest,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text("Select Music Folder")
-                            }
-                            Spacer(modifier = Modifier.height(8.dp))
+                            // Clickable Header
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceEvenly
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { isMusicControlsExpanded = !isMusicControlsExpanded }
+                                    .padding(bottom = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                IconButton(onClick = { onMediaControl(MediaAction.SKIP_PREVIOUS) }) { 
-                                    Text("PREV", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) 
-                                }
-                                IconButton(onClick = { onMediaControl(MediaAction.PLAY) }) { 
-                                    Text("PLAY", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) 
-                                }
-                                IconButton(onClick = { onMediaControl(MediaAction.PAUSE) }) { 
-                                    Text("PAUSE", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) 
-                                }
-                                IconButton(onClick = { onMediaControl(MediaAction.SKIP_NEXT) }) { 
-                                    Text("NEXT", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) 
+                                Text("Shared Music Controls", fontWeight = FontWeight.Bold)
+                                Icon(
+                                    imageVector = if (isMusicControlsExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                    contentDescription = if (isMusicControlsExpanded) "Collapse" else "Expand"
+                                )
+                            }
+                            
+                            // Animated Content
+                            AnimatedVisibility(
+                                visible = isMusicControlsExpanded,
+                                enter = expandVertically(),
+                                exit = shrinkVertically()
+                            ) {
+                                Column {
+                                    Button(
+                                        onClick = onSelectMusicRequest,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text("Select Music Folder")
+                                    }
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceEvenly
+                                    ) {
+                                        IconButton(onClick = { onMediaControl(MediaAction.SKIP_PREVIOUS) }) { 
+                                            Text("PREV", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) 
+                                        }
+                                        IconButton(onClick = { onMediaControl(MediaAction.PLAY) }) { 
+                                            Text("PLAY", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) 
+                                        }
+                                        IconButton(onClick = { onMediaControl(MediaAction.PAUSE) }) { 
+                                            Text("PAUSE", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) 
+                                        }
+                                        IconButton(onClick = { onMediaControl(MediaAction.SKIP_NEXT) }) { 
+                                            Text("NEXT", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) 
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    var musicVolume by remember { mutableStateOf(1.0f) }
+                                    Text("Music Volume: ${(musicVolume * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
+                                    Slider(
+                                        value = musicVolume,
+                                        onValueChange = { 
+                                            musicVolume = it
+                                            onSetLocalMusicVolume(it)
+                                        },
+                                        valueRange = 0f..3f,
+                                        steps = 59,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
                                 }
                             }
-                            Spacer(modifier = Modifier.height(8.dp))
-                            var musicVolume by remember { mutableStateOf(1.0f) }
-                            Text("Music Volume: ${(musicVolume * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
-                            Slider(
-                                value = musicVolume,
-                                onValueChange = { 
-                                    musicVolume = it
-                                    onSetLocalMusicVolume(it)
-                                },
-                                valueRange = 0f..3f,
-                                steps = 59,
-                                modifier = Modifier.fillMaxWidth()
-                            )
                         }
                     }
                 }
