@@ -25,6 +25,7 @@ import com.journeyapps.barcodescanner.ScanOptions
 import com.peersync.app.engine.PeerSyncEngine
 import com.peersync.app.model.ControlMessage
 import com.peersync.app.model.DiscoveredSession
+import com.peersync.app.BuildConfig
 
 data class PermissionState(
     val name: String,
@@ -140,6 +141,7 @@ class MainActivity : ComponentActivity() {
             val peerLatencies by engine.peerLatencies.collectAsState()
             val availableBluetoothDevices by engine.availableBluetoothDevices.collectAsState()
             val selectedBluetoothDeviceId by engine.selectedBluetoothDeviceId.collectAsState()
+            val musicPlayerState by engine.musicPlayerState.collectAsState()
             
             // Permission states
             val locPermissionGranted by remember { locationPermissionGranted }
@@ -149,6 +151,7 @@ class MainActivity : ComponentActivity() {
             val batteryExempt by remember { batteryOptimizationExempt }
 
             App(
+                appVersion = BuildConfig.VERSION_NAME,
                 connectionState = connectionState,
                 discoveredSessions = discoveredSessions,
                 sessionInfo = sessionInfo,
@@ -159,6 +162,7 @@ class MainActivity : ComponentActivity() {
                 peerLatencies = peerLatencies,
                 availableBluetoothDevices = availableBluetoothDevices,
                 selectedBluetoothDeviceId = selectedBluetoothDeviceId,
+                musicPlayerState = musicPlayerState,
                 locationPermissionGranted = locPermissionGranted,
                 microphonePermissionGranted = micPermissionGranted,
                 cameraPermissionGranted = camPermissionGranted,
@@ -198,6 +202,9 @@ class MainActivity : ComponentActivity() {
                 },
                 onSelectMusicRequest = {
                     musicFolderPickerLauncher.launch(null)
+                },
+                onSeekMusic = { positionMs ->
+                    engine.seekMusicTo(positionMs)
                 },
                 onToggleMicMute = { muted ->
                     engine.setMicMuted(muted)

@@ -16,6 +16,7 @@ import peersync.composeapp.generated.resources.logo
 import org.jetbrains.compose.resources.painterResource
 import com.peersync.app.model.ConnectionState
 import com.peersync.app.model.MediaAction
+import com.peersync.app.model.MusicPlayerState
 import com.peersync.app.model.SessionInfo
 import com.peersync.app.model.AudioRoute
 import com.peersync.app.model.AudioDeviceModel
@@ -34,6 +35,7 @@ private val OnColor = Color(0xFFFFFFFF)                // White (for all On* col
 
 @Composable
 fun App(
+    appVersion: String = "",
     connectionState: ConnectionState = ConnectionState.Disconnected,
     discoveredSessions: List<DiscoveredSession> = emptyList(),
     sessionInfo: SessionInfo? = null,
@@ -44,6 +46,7 @@ fun App(
     peerLatencies: Map<Byte, Long> = emptyMap(),
     availableBluetoothDevices: List<AudioDeviceModel> = emptyList(),
     selectedBluetoothDeviceId: Int? = null,
+    musicPlayerState: MusicPlayerState = MusicPlayerState(),
     locationPermissionGranted: Boolean = false,
     microphonePermissionGranted: Boolean = false,
     cameraPermissionGranted: Boolean = false,
@@ -59,6 +62,7 @@ fun App(
     onDisconnect: () -> Unit = {},
     onMediaControl: (MediaAction) -> Unit = {},
     onSelectMusicRequest: () -> Unit = {},
+    onSeekMusic: (Long) -> Unit = {},
     onToggleMicMute: (Boolean) -> Unit = {},
     onSelectAudioRoute: (AudioRoute) -> Unit = {},
     onSelectBluetoothDevice: (Int) -> Unit = {},
@@ -105,6 +109,7 @@ fun App(
             if (showSettings) {
                 // Show Settings Screen
                 SettingsScreen(
+                    appVersion = appVersion,
                     locationPermissionGranted = locationPermissionGranted,
                     microphonePermissionGranted = microphonePermissionGranted,
                     cameraPermissionGranted = cameraPermissionGranted,
@@ -130,11 +135,13 @@ fun App(
                     peerLatencies = peerLatencies,
                     availableBluetoothDevices = availableBluetoothDevices,
                     selectedBluetoothDeviceId = selectedBluetoothDeviceId,
+                    musicPlayerState = musicPlayerState,
                     onCreateSession = onCreateSession,
                     onJoinSession = onJoinSession,
                     onDisconnect = onDisconnect,
                     onMediaControl = onMediaControl,
                     onSelectMusicRequest = onSelectMusicRequest,
+                    onSeekMusic = onSeekMusic,
                     onToggleMicMute = onToggleMicMute,
                     onSelectAudioRoute = onSelectAudioRoute,
                     onSelectBluetoothDevice = onSelectBluetoothDevice,
