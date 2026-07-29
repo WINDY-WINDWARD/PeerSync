@@ -15,12 +15,13 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlin.concurrent.Volatile
 
 class MediaHostManager(
-    private val context: Context,
-    private val onFeedLocalMusic: suspend (ByteArray) -> Unit,
-    private val getLocalMusicFreeSpaceBytes: () -> Int = { 0 },
-    private val onClearLocalMusicBuffers: () -> Unit = {}
+     private val context: Context,
+     private val onFeedLocalMusic: suspend (ByteArray) -> Unit,
+     private val getLocalMusicFreeSamples: () -> Int = { 0 },
+     private val onClearLocalMusicBuffers: () -> Unit = {}
 ) {
 
     companion object {
@@ -52,11 +53,13 @@ class MediaHostManager(
     private val playlist = mutableListOf<Uri>()
     private var currentTrackIndex: Int = -1
 
-    private var myOriginId: Byte = 0
-    private var musicSeqIndex: UShort = 0u
-    
-    // Last position state update timestamp (for throttling)
-    private var lastPositionUpdateMs: Long = 0L
+     private var myOriginId: Byte = 0
+     private var musicSeqIndex: UShort = 0u
+     
+     // Last position state update timestamp (for throttling)
+     // Marked @Volatile since it's read/written from multiple coroutines (decode + position updater)
+     @Volatile
+     private var lastPositionUpdateMs: Long = 0L
 
     fun setOriginId(originId: Byte) {
         this.myOriginId = originId
@@ -118,17 +121,22 @@ class MediaHostManager(
                     if (next in playlist.indices) next else -1
                 }
 
-                if (nextIndex < 0) {
-                    _isPlaying.value = false
-                    // Clear current track on playlist end so resume restarts from beginning
-                    _currentTrackUri.value = null
-                    _musicPlayerState.value = _musicPlayerState.value.copy(
-                        isPlaying = false,
-                        positionMs = _musicPlayerState.value.durationMs
-                    )
-                    Log.d(TAG, "Reached end of playlist")
-                    break
-                }
+                 if (nextIndex < 0) {
+                     _isPlaying.value = false
+                     // Clear current track and metadata on playlist end so resume restarts from beginning
+                     _currentTrackUri.value = null
+                     _musicPlayerState.value = MusicPlayerState(
+                         isPlaying = false,
+                         trackTitle = "",
+                         trackArtist = "",
+                         durationMs = 0,
+                         positionMs = 0,
+                         trackIndex = -1,
+                         trackCount = 0
+                     )
+                     Log.d(TAG, "Reached end of playlist")
+                     break
+                 }
 
                 targetIndex = nextIndex
             }
@@ -403,17 +411,17 @@ class MediaHostManager(
                         // Push to audioBridge and suspend if full
                         onFeedLocalMusic(outBytes)
                         
-                        // Update position with throttling
-                        val nowMs = System.currentTimeMillis()
-                        if (nowMs - lastPositionUpdateMs >= POSITION_UPDATE_THROTTLE_MS) {
-                            // Calculate actual playback position: PTS minus buffer lead
-                            val ptsMs = bufferInfo.presentationTimeUs / 1000
-                            val freeSamples = getLocalMusicFreeSpaceBytes()
-                            // RingBuffer capacity is 32000 int16 samples (64000 bytes) at 16kHz
-                            // 1 sample = 1/16000 second = 0.0625ms
-                            // bufferedSamples / 16 = milliseconds
-                            val bufferedMs = (32000 - freeSamples) / 16
-                            val displayPositionMs = (ptsMs - bufferedMs).coerceIn(0, durationMs)
+                         // Update position with throttling
+                         val nowMs = System.currentTimeMillis()
+                         if (nowMs - lastPositionUpdateMs >= POSITION_UPDATE_THROTTLE_MS) {
+                             // Calculate actual playback position: PTS minus buffer lead
+                             val ptsMs = bufferInfo.presentationTimeUs / 1000
+                             val freeSamples = getLocalMusicFreeSamples()
+                             // RingBuffer capacity is 32000 int16 samples (64000 bytes) at 16kHz
+                             // 1 sample = 1/16000 second = 0.0625ms
+                             // bufferedSamples / 16 = milliseconds (16000 samples/sec ÷ 16 = 1000ms/1000ms)
+                             val bufferedMs = (32000 - freeSamples) / 16
+                             val displayPositionMs = (ptsMs - bufferedMs).coerceIn(0, durationMs)
                             
                             _musicPlayerState.value = _musicPlayerState.value.copy(
                                 positionMs = displayPositionMs,

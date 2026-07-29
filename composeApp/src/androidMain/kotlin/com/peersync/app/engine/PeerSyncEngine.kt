@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.ConcurrentHashMap
 
 import com.peersync.app.audio.AudioBridge
 import com.peersync.app.audio.MediaHostManager
@@ -44,17 +45,18 @@ class PeerSyncEngine private constructor(private val context: Context) {
 
     val wifiSocketController = WifiSocketController(context)
     val audioBridge = AudioBridge(context)
-    val mediaHostManager = MediaHostManager(
-        context,
-        { payload ->
-            // Suspend until C++ has enough free space in the 16kHz mix buffer.
-            // This perfectly locks decoding pacing to the hardware audio clock!
-            while (audioBridge.getLocalMusicFreeSpace() < payload.size) {
-                kotlinx.coroutines.delay(10)
-            }
-            audioBridge.feedLocalMusic(payload)
-        },
-        { audioBridge.getLocalMusicFreeSpace() },
+     val mediaHostManager = MediaHostManager(
+         context,
+         { payload ->
+             // Suspend until C++ has enough free space in the 16kHz mix buffer.
+             // This perfectly locks decoding pacing to the hardware audio clock!
+             // Note: getLocalMusicFreeSpace() returns samples, payload.size is bytes (1 sample = 2 bytes)
+             while (audioBridge.getLocalMusicFreeSpace() < payload.size / 2) {
+                 kotlinx.coroutines.delay(10)
+             }
+             audioBridge.feedLocalMusic(payload)
+         },
+         { audioBridge.getLocalMusicFreeSpace() },
         { audioBridge.clearLocalMusicBuffers() }
     )
 
@@ -107,11 +109,11 @@ class PeerSyncEngine private constructor(private val context: Context) {
     // Disconnect flag: prevents reconnection fallback when user manually disconnects
     @Volatile private var manualDisconnectRequested = false
 
-    // Session state management (replaces TcpControlPlane logic)
-    private var nextOriginId: Byte = 1  // Host: next ID to assign to clients
-    private var hostEndpointId: String? = null  // Client: endpoint ID of the host
-    private var isHost: Boolean = false  // Track if this device is the host
-    private val connectedClientEndpoints = mutableMapOf<String, Byte>()  // endpointId -> originId
+     // Session state management (replaces TcpControlPlane logic)
+     private var nextOriginId: Byte = 1  // Host: next ID to assign to clients
+     private var hostEndpointId: String? = null  // Client: endpoint ID of the host
+     private var isHost: Boolean = false  // Track if this device is the host
+     private val connectedClientEndpoints = ConcurrentHashMap<String, Byte>()  // endpointId -> originId (thread-safe; mutated from multiple coroutines)
 
     // Diagnostic frame counters (debug)
     private val outgoingFrames = java.util.concurrent.atomic.AtomicLong(0)
