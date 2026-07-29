@@ -417,6 +417,11 @@ size_t AudioEngine::getLocalMusicFreeSpace() {
     return inFree < outFree ? inFree : outFree;
 }
 
+void AudioEngine::clearLocalMusicBuffers() {
+    localMusicInRingBuffer_.clear();
+    localMusicOutRingBuffer_.clear();
+}
+
 void AudioEngine::feedReceivedPacket(uint8_t originId, uint8_t flag, const uint8_t* payload, size_t payloadSize) {
     if (flag != 0x01) return; // only voice packets
 

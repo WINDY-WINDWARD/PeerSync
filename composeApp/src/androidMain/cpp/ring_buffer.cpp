@@ -27,6 +27,9 @@ size_t RingBuffer::write(const int16_t* data, size_t count) {
 }
 
 size_t RingBuffer::read(int16_t* data, size_t count) {
+    // Snapshot generation at start to detect if clear() is called concurrently
+    uint64_t genStart = generation_.load(std::memory_order_acquire);
+    
     size_t head = head_.load(std::memory_order_acquire);
     size_t tail = tail_.load(std::memory_order_relaxed);
 
@@ -41,6 +44,13 @@ size_t RingBuffer::read(int16_t* data, size_t count) {
     size_t secondPart = toRead - firstPart;
     if (secondPart > 0) {
         std::memcpy(data + firstPart, &buffer_[0], secondPart * sizeof(int16_t));
+    }
+
+    // Check if clear() was called during this read; if so, discard and return 0
+    // to avoid playing stale audio data
+    uint64_t genEnd = generation_.load(std::memory_order_acquire);
+    if (genStart != genEnd) {
+        return 0;  // Data was cleared mid-read, discard this read
     }
 
     tail_.store((tail + toRead) % capacity_, std::memory_order_release);
@@ -58,6 +68,12 @@ size_t RingBuffer::availableWrite() const {
 }
 
 void RingBuffer::clear() {
+    // Increment generation counter with release semantics so that any concurrent
+    // read() operations that started before this clear() will detect the change
+    // and discard their buffered data rather than play stale audio.
+    generation_.fetch_add(1, std::memory_order_release);
+    
+    // Reset head and tail (relaxed is fine; the generation increment provides the ordering)
     head_.store(0, std::memory_order_relaxed);
     tail_.store(0, std::memory_order_relaxed);
 }

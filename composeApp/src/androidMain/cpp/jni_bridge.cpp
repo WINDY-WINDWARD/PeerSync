@@ -108,6 +108,13 @@ Java_com_peersync_app_audio_AudioBridge_nativeGetLocalMusicFreeSpace(JNIEnv* env
 }
 
 JNIEXPORT void JNICALL
+Java_com_peersync_app_audio_AudioBridge_nativeClearLocalMusicBuffers(JNIEnv* env, jobject thiz) {
+    if (gAudioEngine) {
+        gAudioEngine->clearLocalMusicBuffers();
+    }
+}
+
+JNIEXPORT void JNICALL
 Java_com_peersync_app_audio_AudioBridge_nativeFeedLocalMusic(JNIEnv* env, jobject thiz, jbyteArray pcmData) {
     if (gAudioEngine && pcmData) {
         jsize len = env->GetArrayLength(pcmData);

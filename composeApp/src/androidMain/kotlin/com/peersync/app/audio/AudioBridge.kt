@@ -78,6 +78,7 @@ class AudioBridge(private val context: Context) {
     private external fun nativeFeedReceivedPacket(originId: Byte, flag: Byte, payload: ByteArray)
     private external fun nativeFeedLocalMusic(pcmData: ByteArray)
     private external fun nativeGetLocalMusicFreeSpace(): Int
+    private external fun nativeClearLocalMusicBuffers()
     private external fun nativeSetVadMode(mode: Int)
     private external fun nativeSetMusicDucking(enabled: Boolean)
     private external fun nativeSetMyOriginId(originId: Byte)
@@ -171,6 +172,10 @@ class AudioBridge(private val context: Context) {
 
     fun getLocalMusicFreeSpace(): Int {
         return nativeGetLocalMusicFreeSpace()
+    }
+
+    fun clearLocalMusicBuffers() {
+        nativeClearLocalMusicBuffers()
     }
 
     fun isAudioRunning(): Boolean {

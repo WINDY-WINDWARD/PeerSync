@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import com.peersync.app.model.ConnectionState
 import com.peersync.app.model.DiscoveredSession
 import com.peersync.app.model.MediaAction
+import com.peersync.app.model.MusicPlayerState
 import com.peersync.app.model.SessionInfo
 import com.peersync.app.ui.activesession.ActiveSessionScreen
 import com.peersync.app.ui.sessionlist.SessionListScreen
@@ -22,11 +23,13 @@ fun PeerSyncNavGraph(
     peerLatencies: Map<Byte, Long> = emptyMap(),
     availableBluetoothDevices: List<AudioDeviceModel> = emptyList(),
     selectedBluetoothDeviceId: Int? = null,
+    musicPlayerState: MusicPlayerState = MusicPlayerState(),
     onCreateSession: (String) -> Unit,
     onJoinSession: (DiscoveredSession, String) -> Unit,
     onDisconnect: () -> Unit,
     onMediaControl: (MediaAction) -> Unit,
     onSelectMusicRequest: () -> Unit,
+    onSeekMusic: (Long) -> Unit = {},
     onToggleMicMute: (Boolean) -> Unit,
     onSelectAudioRoute: (AudioRoute) -> Unit,
     onSelectBluetoothDevice: (Int) -> Unit = {},
@@ -50,9 +53,11 @@ fun PeerSyncNavGraph(
                 peerLatencies = peerLatencies,
                 availableBluetoothDevices = availableBluetoothDevices,
                 selectedBluetoothDeviceId = selectedBluetoothDeviceId,
+                musicPlayerState = musicPlayerState,
                 onDisconnect = onDisconnect,
                 onMediaControl = onMediaControl,
                 onSelectMusicRequest = onSelectMusicRequest,
+                onSeekMusic = onSeekMusic,
                 onToggleMicMute = onToggleMicMute,
                 onSelectAudioRoute = onSelectAudioRoute,
                 onSelectBluetoothDevice = onSelectBluetoothDevice,

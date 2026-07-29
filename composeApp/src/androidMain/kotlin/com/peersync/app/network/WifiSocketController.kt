@@ -706,6 +706,20 @@ class WifiSocketController(private val context: Context) {
     }
 
     /**
+     * Close and remove a specific client socket handler (host side).
+     * Used to proactively kill zombie connections when a device rejoins.
+     */
+    fun closeClientEndpoint(endpointId: String) {
+        if (isHosting) {
+            val handler = clientSockets.remove(endpointId)
+            if (handler != null) {
+                Log.d(TAG, "Closing zombie endpoint: $endpointId")
+                handler.stop()
+            }
+        }
+    }
+
+    /**
      * Broadcast control message to all connected endpoints.
      */
     fun broadcastControlMessage(message: ControlMessage) {

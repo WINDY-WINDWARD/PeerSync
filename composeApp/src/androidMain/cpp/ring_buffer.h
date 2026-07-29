@@ -26,6 +26,7 @@ private:
     size_t capacity_;
     std::atomic<size_t> head_{0};
     std::atomic<size_t> tail_{0};
+    std::atomic<uint64_t> generation_{0};  // For synchronizing concurrent clear()
 };
 
 #endif // PEERSYNC_RING_BUFFER_H

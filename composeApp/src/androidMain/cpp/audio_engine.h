@@ -28,6 +28,7 @@ public:
     // Feed locally decoded 16kHz mono music to be mixed into the microphone stream
     size_t feedLocalMusic(const int16_t* pcm, size_t sampleCount);
     size_t getLocalMusicFreeSpace();
+    void clearLocalMusicBuffers();
 
     void setVadMode(int mode);
     void setMusicDucking(bool enabled);
