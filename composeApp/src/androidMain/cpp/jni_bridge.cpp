@@ -1,6 +1,7 @@
 #include <jni.h>
 #include "audio_engine.h"
 #include <android/log.h>
+#include <pthread.h>
 
 #define LOG_TAG "JniBridge"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -11,52 +12,59 @@ static jobject gAudioBridgeObj = nullptr;
 static jmethodID gOnNativeAudioFrameMethod = nullptr;
 static jmethodID gOnStreamErrorMethod = nullptr;
 
-static void onStreamErrorFromNative(const char* errorMessage) {
-    if (!gJavaVM || !gAudioBridgeObj || !gOnStreamErrorMethod || errorMessage == nullptr) return;
+// Thread-exit hook for safely detaching JNI without impacting real-time audio path
+static pthread_key_t gJniThreadKey;
+static pthread_once_t gJniThreadKeyOnce = PTHREAD_ONCE_INIT;
 
+static void detachJniThread(void* env) {
+    if (gJavaVM) {
+        gJavaVM->DetachCurrentThread();
+    }
+}
+
+static void makeJniThreadKey() {
+    pthread_key_create(&gJniThreadKey, detachJniThread);
+}
+
+// Attach the calling thread ONCE and stay attached. AAudio callback threads
+// live for the stream lifetime; per-frame AttachCurrentThread/DetachCurrentThread
+// creates/destroys a Java Thread object every 20ms on a real-time thread.
+static JNIEnv* getAttachedEnv() {
+    if (!gJavaVM) return nullptr;
     JNIEnv* env = nullptr;
     jint res = gJavaVM->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
-    bool shouldDetach = false;
-
     if (res == JNI_EDETACHED) {
-        if (gJavaVM->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
-        shouldDetach = true;
+        if (gJavaVM->AttachCurrentThread(&env, nullptr) == JNI_OK) {
+            // Register destructor to prevent ART crashes when the AAudio thread exits
+            pthread_once(&gJniThreadKeyOnce, makeJniThreadKey);
+            pthread_setspecific(gJniThreadKey, env);
+        } else {
+            return nullptr;
+        }
     }
+    return env;
+}
 
+static void onStreamErrorFromNative(const char* errorMessage) {
+    if (!gAudioBridgeObj || !gOnStreamErrorMethod || errorMessage == nullptr) return;
+    JNIEnv* env = getAttachedEnv();
     if (env) {
         jstring jmsg = env->NewStringUTF(errorMessage);
         env->CallVoidMethod(gAudioBridgeObj, gOnStreamErrorMethod, jmsg);
         env->DeleteLocalRef(jmsg);
     }
-
-    if (shouldDetach) {
-        gJavaVM->DetachCurrentThread();
-    }
 }
 
 static void onNativeAudioFrame(uint8_t flag, const uint8_t* encodedData, size_t size) {
-    if (!gJavaVM || !gAudioBridgeObj || !gOnNativeAudioFrameMethod) return;
-
-    JNIEnv* env = nullptr;
-    jint res = gJavaVM->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
-    bool shouldDetach = false;
-
-    if (res == JNI_EDETACHED) {
-        if (gJavaVM->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
-        shouldDetach = true;
-    }
-
+    if (!gAudioBridgeObj || !gOnNativeAudioFrameMethod) return;
+    JNIEnv* env = getAttachedEnv();
     if (env && encodedData && size > 0) {
+        // Fresh array per frame: the Kotlin side emits it asynchronously into
+        // a SharedFlow, so a reused buffer would corrupt in-flight frames.
         jbyteArray byteArray = env->NewByteArray(static_cast<jsize>(size));
         env->SetByteArrayRegion(byteArray, 0, static_cast<jsize>(size), reinterpret_cast<const jbyte*>(encodedData));
-
         env->CallVoidMethod(gAudioBridgeObj, gOnNativeAudioFrameMethod, static_cast<jbyte>(flag), byteArray);
-
         env->DeleteLocalRef(byteArray);
-    }
-
-    if (shouldDetach) {
-        gJavaVM->DetachCurrentThread();
     }
 }
 
@@ -128,7 +136,7 @@ Java_com_peersync_app_audio_AudioBridge_nativeFeedLocalMusic(JNIEnv* env, jobjec
 
 JNIEXPORT void JNICALL
 Java_com_peersync_app_audio_AudioBridge_nativeFeedReceivedPacket(
-    JNIEnv* env, jobject thiz, jbyte originId, jbyte flag, jbyteArray payload
+    JNIEnv* env, jobject thiz, jbyte originId, jbyte flag, jshort seqIndex, jbyteArray payload
 ) {
     if (gAudioEngine && payload) {
         jsize len = env->GetArrayLength(payload);
@@ -137,6 +145,7 @@ Java_com_peersync_app_audio_AudioBridge_nativeFeedReceivedPacket(
         gAudioEngine->feedReceivedPacket(
             static_cast<uint8_t>(originId),
             static_cast<uint8_t>(flag),
+            static_cast<uint16_t>(seqIndex),
             reinterpret_cast<const uint8_t*>(body),
             static_cast<size_t>(len)
         );
@@ -200,6 +209,13 @@ Java_com_peersync_app_audio_AudioBridge_nativeIsAudioRunning(JNIEnv* env, jobjec
         return gAudioEngine->isRunning() ? JNI_TRUE : JNI_FALSE;
     }
     return JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_peersync_app_audio_AudioBridge_nativeResetPeerSeq(JNIEnv* env, jobject thiz, jbyte originId) {
+    if (gAudioEngine) {
+        gAudioEngine->resetPeerSeq(static_cast<uint8_t>(originId));
+    }
 }
 
 }

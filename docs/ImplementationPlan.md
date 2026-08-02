@@ -22,7 +22,7 @@ flowchart TD
     Src --> AndroidMain["androidMain/"]
 
     CommonMain --> CommonCode["Kotlin Code: UI, Models, State"]
-    AndroidMain --> AndroidCode["Kotlin/C++ Code: Nearby Connections, JNI Audio"]
+    AndroidMain --> AndroidCode["Kotlin/C++ Code: Wi-Fi Direct, JNI Audio"]
     AndroidMain --> Manifest["AndroidManifest.xml"]
 ```
 
@@ -42,7 +42,7 @@ flowchart TB
 
     subgraph androidMain ["androidMain Module (Android Specific)"]
         ForegroundService["Foreground Service"]
-        NearbyConnections["Nearby Connections Manager"]
+        NearbyConnections["Wi-Fi Direct Manager"]
         AudioEngine["Audio Engine / JNI"]
         
         ForegroundService --> NearbyConnections
@@ -71,11 +71,11 @@ The following design choices have been finalized and must be adhered to througho
 | **Opus Frame Size** | 20ms | VoIP standard. 50 packets/sec per stream, ~80 bytes/packet at 32 kbps. |
 | **Native Audio API** | AAudio (via JNI) | Direct use of AAudio hardware abstraction layer through C++ JNI bindings for minimum latency and OEM compatibility on API 30+. |
 | **VAD Algorithm** | WebRTC VAD (GMM-based) | More accurate speech/noise discrimination than energy-only. ~2ms overhead fits latency budget. Integrated via `libwebrtc_vad` in C++ layer. |
-| **Jitter Buffer** | Fixed-depth (2–3 packets = 40–60ms) | Deterministic latency on local Nearby Connections (low, predictable jitter). Drop late packets per SRS §5.2. |
+| **Jitter Buffer** | Fixed-depth (2–3 packets = 40–60ms) | Deterministic latency on local Wi-Fi Direct network (low, predictable jitter). Drop late packets per SRS §5.2. |
 | **GO Selection** | Manual — session creator is GO | Predictable UX. Failover uses automatic re-election. |
 | **GO Failover Election** | Highest User Origin ID wins | Deterministic, zero inter-client negotiation needed. Each client independently derives the same result. |
 | **GO Audio Routing** | Forward individual streams (no server-side mixing) | Preserves per-speaker identity for future per-user volume control. Clients mix N-1 voice streams locally. |
-| **Session Security** | 6-digit numeric PIN | Communicated verbally. Rate-limited (3 attempts then 30s cooldown). Sufficient for local network threat model. |
+| **Session Security** | 8-digit numeric PIN | Communicated verbally. Rate-limited (3 attempts then 30s cooldown). Sufficient for local network threat model. Required for WPA2 passphrase. |
 | **Audio Ducking Curve** | Fast fade: ~50ms duck-in, ~200–300ms restore | Broadcast-style. Avoids click artifacts on duck, avoids jarring pop on restore. |
 | **Music File Selection** | Android SAF (`ACTION_OPEN_DOCUMENT`) | Zero extra storage permissions required. Native OS picker. |
 | **Media Controls** | Group Owner only | Only the session creator (GO) broadcasts music. All peers can view playback state and trigger Play/Pause/Skip commands to the GO. |
@@ -114,23 +114,23 @@ Since we are scaffolding manually, the first phase involves setting up the Gradl
 
 - Implement a runtime permission request flow in `MainActivity` using `ActivityResultContracts.RequestMultiplePermissions()`.
 - Display rationale dialogs explaining why each dangerous permission (`NEARBY_WIFI_DEVICES`, `ACCESS_FINE_LOCATION`, `RECORD_AUDIO`, `POST_NOTIFICATIONS`) is required before requesting.
-- Gate all networking and audio functionality behind successful permission grants — the app must not attempt Nearby Connections or mic access without approval.
+- Gate all networking and audio functionality behind successful permission grants — the app must not attempt Wi-Fi Direct or mic access without approval.
 
 5. **Shared UI Foundation:**
 
 - Create `composeApp/src/commonMain/kotlin/com/peersync/app/App.kt`.
 - Create the Compose `App()` function with Material 3 theme.
 - Implement a **2-screen navigation** structure:
-  - **Session List Screen:** Displays discovered nearby sessions (via Nearby Connections API), a "Create Session" button, and PIN entry for joining.
+  - **Session List Screen:** Displays discovered nearby sessions (via Wi-Fi Direct scanning), a "Create Session" button, and PIN entry for joining.
   - **Active Session Screen:** Shows connected peers with live audio level indicators, music playback controls (Group Owner only for selection, all peers can Play/Pause/Skip), and a disconnect button.
 
-### Phase 2: Core Networking (Nearby Connections API)
+### Phase 2: Core Networking (Wi-Fi Direct P2P)
 
-Implementing the Hub-and-Spoke local star topology using Google Nearby Connections API.
+Implementing the Hub-and-Spoke local star topology using Wi-Fi Direct P2P and raw TCP/UDP sockets.
 
 1. **Service Integration:** Create the Android Foreground Service (`PeerSyncService`) to host the network and audio loops, ensuring the connection doesn't drop when the screen turns off. Acquire a partial `WAKE_LOCK` to prevent CPU sleep.
-2. **Peer Discovery (F-01):** Implement peer discovery using the Google Nearby Connections API with `Strategy.P2P_CLUSTER`. The session creator (GO) advertises a unique endpoint identifier with an encrypted session token (HMAC-SHA256 of the 6-digit PIN). Discovering clients see the session and must present the correct PIN during the connection handshake to join. The GO generates the **6-digit numeric PIN** and displays it on-screen.
-3. **Security — PIN Validation:** When a new device discovers a session and attempts to join via Nearby Connections, it must present the 6-digit PIN during the initial connection request. The GO validates the PIN before accepting the connection. Unauthorized devices are rejected. A **rate limiter** (3 failed attempts → 30-second cooldown) must be enforced to prevent brute-force attacks.
+2. **Peer Discovery (F-01):** Implement peer discovery using Wi-Fi Direct scanning. The session creator (GO) advertises a unique SSID (`DIRECT-PS-<sessionName>`). Discovering clients see the session and must present the correct PIN during the WPA2 connection handshake to join. The GO generates the **8-digit numeric PIN** and displays it on-screen.
+3. **Security — PIN Validation:** When a new device discovers a session and attempts to join via Wi-Fi Direct, it must present the 8-digit PIN during the initial connection request. The GO validates the PIN before accepting the connection. Unauthorized devices are rejected. A **rate limiter** (3 failed attempts → 30-second cooldown) must be enforced to prevent brute-force attacks.
 4. **Connection Management:** The user who creates the session is always the initial GO (manual selection). The GO assigns each joining client a unique **User Origin ID** (1 byte, starting from 1; GO is always ID 0).
    - **Client Disconnect Resilience:** When a Client Spoke disconnects, the GO must remove it from the active member list and notify remaining peers. The group conversation must continue uninterrupted.
 5. **Group Owner Failover & Re-election Protocol:**
@@ -140,10 +140,10 @@ Implementing the Hub-and-Spoke local star topology using Google Nearby Connectio
    - The elected device advertises a new session (becomes the new GO with ID 0), and all other clients scan for the new group and reconnect.
    - State migration: the new GO rebuilds the active member list and inherits media control. The session PIN remains the same.
    - **Reconnection timeout:** If a client cannot discover and reconnect to the new GO within **30 seconds**, it transitions to `Disconnected` and returns to the Session List screen. Expected recovery window for a successful failover is **~8–12 seconds** (5s heartbeat detection + 3–7s re-election and reconnect).
-6. **Dual-Plane Setup via Nearby Connections:**
+6. **Dual-Plane Setup via Wi-Fi Direct:**
 
-- The Control Plane handles session state, heartbeats, media controls (Play/Pause/Skip), and timing information via serialized control messages.
-- The Data Plane handles audio streaming with individual packets tagged with source origin and payload type. The GO operates as a **packet forwarder** — it receives each client's audio packets and relays them individually to all other clients without mixing. This preserves per-speaker identity.
+- The Control Plane (TCP) handles session state, heartbeats, media controls (Play/Pause/Skip), and timing information via serialized control messages.
+- The Data Plane (UDP) handles audio streaming with individual packets tagged with source origin and payload type. The GO operates as a **packet forwarder** — it receives each client's audio packets and relays them individually to all other clients without mixing. This preserves per-speaker identity.
 
 ### Phase 3: Audio Engine & Native Layer
 
@@ -175,7 +175,7 @@ Building the low-latency audio processing system.
 2. **Media Host Logic:** Only the Group Owner (session creator) can broadcast music to all participants. The GO selects a music file using the **Android SAF file picker** (`ACTION_OPEN_DOCUMENT`), decodes it to PCM locally, re-encodes with **Opus Audio mode** (44.1kHz Stereo, 96–128 kbps), and streams it as separate audio packets (flag `0x02`) alongside its voice stream (flag `0x01`). This preserves audio fidelity by keeping the two pipelines structurally separate. All peers can view the current playback state and send Play/Pause/Skip commands to the GO.
 3. **Client-Side Mixing & Ducking:** Each receiving client runs a local digital mixer that sums up to **N-1 individual voice streams** (forwarded by the GO) plus 1 music stream. When any `0x01` (Voice) packet is detected, apply a **fast-fade audio duck**: attenuate the `0x02` (Music) stream volume by **60%** over ~50ms (as per SRS TC-02). Restore music volume over ~200–300ms once voice packets cease for a configurable silence window.
 4. **Media Playback Controls:** Any connected peer can send Play/Pause/Skip commands to the GO. The GO broadcasts the command to all peers, which update their local playback state and rendering. This keeps the star topology intact and provides shared playback control.
-5. **Jitter Buffer:** Implement a **fixed-depth jitter buffer** (2–3 packets = 40–60ms at 20ms Opus frame size) modeled on RTP sequence architectures (per SRS §5.2). The buffer reorders incoming packets by their Sequence Index and drops late packets rather than delaying the real-time audio playback stream. Fixed depth is appropriate for the low, predictable jitter of a local Nearby Connections network.
+5. **Jitter Buffer:** Implement a **fixed-depth jitter buffer** (2–3 packets = 40–60ms at 20ms Opus frame size) modeled on RTP sequence architectures (per SRS §5.2). The buffer reorders incoming packets by their Sequence Index and drops late packets rather than delaying the real-time audio playback stream. Fixed depth is appropriate for the low, predictable jitter of a local Wi-Fi Direct network.
 6. **NTP-Style Clock Synchronization:** Implement a clock synchronization mechanism over the TCP control plane to align music playback across all devices. The GO periodically broadcasts timestamp reference packets; clients calculate and apply local clock offset corrections. Target: music playback drift must not exceed **50ms** across devices (per SRS §4.1).
 7. **Latency Budget:** Per SRS §4.1, the network round-trip delay across all 5 active nodes over the data plane must not exceed **40ms**.
    - **Network RTT budget** (SRS §4.1 target: ≤ 40ms):
@@ -192,9 +192,9 @@ Building the low-latency audio processing system.
 
 Validating the system against the SRS verification scenarios (§5.1).
 
-1. **TC-01 — Multi-Peer Capacity:** Connect 5 Android devices via Nearby Connections API. Verify the Group Owner maps 4 distinct client connections. Confirm all 5 microphones stream concurrently without dropped connections or audio artifacts.
+1. **TC-01 — Multi-Peer Capacity:** Connect 5 Android devices via Wi-Fi Direct. Verify the Group Owner maps 4 distinct client connections. Confirm all 5 microphones stream concurrently without dropped connections or audio artifacts.
 2. **TC-02 — Audio Ducking:** Group Owner plays a local MP3 file while User B begins speaking. Verify that receiving devices decode the Voice header packet and immediately attenuate the Music output level by 60%.
-3. **TC-03 — System Persistence:** Lock the device screen on 3 out of 5 connected client phones. Verify the foreground service retains wake-locks, Nearby Connections remain fully active, and the voice feed continues without interruption.
+3. **TC-03 — System Persistence:** Lock the device screen on 3 out of 5 connected client phones. Verify the foreground service retains wake-locks, Wi-Fi Direct sockets remain fully active, and the voice feed continues without interruption.
 4. **Latency Validation:** Measure round-trip audio delay across all nodes using loopback testing. Verify RTT stays under 40ms under normal operating conditions.
 5. **Music Sync Drift:** Measure music playback offset between the Group Owner and all receiving clients. Verify drift stays under 50ms using the clock sync mechanism.
 6. **GO Failover Test:** Forcibly kill the GO application mid-session. Verify remaining clients detect the loss, elect a new GO, re-establish all connections, and resume the voice feed within **12 seconds**. Verify clients that cannot reconnect within **30 seconds** gracefully return to the Session List.

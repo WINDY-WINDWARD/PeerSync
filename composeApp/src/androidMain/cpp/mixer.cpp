@@ -11,14 +11,15 @@ int16_t AudioMixer::softClip(int32_t sample) {
 }
 
 void AudioMixer::mixFrame(
-    const std::map<uint8_t, const int16_t*>& voiceStreams,
+    const int16_t* const* voiceStreams,
+    size_t streamCount,
     const int16_t* musicStream,
     int16_t* outMixedPcm,
     size_t sampleCount
 ) {
-    bool voiceActive = !voiceStreams.empty();
+    const bool voiceActive = streamCount > 0;
 
-    float targetMusicGain = (duckingEnabled_ && voiceActive) ? DUCKED_GAIN : FULL_GAIN;
+    const float targetMusicGain = (duckingEnabled_ && voiceActive) ? DUCKED_GAIN : FULL_GAIN;
 
     for (size_t i = 0; i < sampleCount; ++i) {
         // Smoothly adjust music gain towards target
@@ -30,11 +31,9 @@ void AudioMixer::mixFrame(
 
         int32_t mixedSample = 0;
 
-        // Sum N-1 voice streams
-        for (const auto& kv : voiceStreams) {
-            if (kv.second != nullptr) {
-                mixedSample += kv.second[i];
-            }
+        // Sum N voice streams (flat contiguous pointer array — cache-friendly)
+        for (size_t s = 0; s < streamCount; ++s) {
+            mixedSample += voiceStreams[s][i];
         }
 
         // Add ducked music stream if present

@@ -19,10 +19,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
-
 import com.peersync.app.audio.AudioBridge
 import com.peersync.app.audio.MediaHostManager
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.random.Random
 
 class PeerSyncEngine private constructor(private val context: Context) {
@@ -126,6 +124,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
         observeNearbyState()
         observeControlPlaneMessages()
         observeEndpointDisconnects()
+        observeSessionInfoForSeqResets()
         observeMediaHostOwnership()
         observeAudioBridgeOutgoingFrames()
         observeNearbyIncomingAudioPackets()
@@ -273,14 +272,16 @@ class PeerSyncEngine private constructor(private val context: Context) {
                         wifiSocketController.broadcastControlMessage(pong)
                     }
                     is ControlMessage.SpeedTestPong -> {
-                        val rttMs = System.currentTimeMillis() - msg.originalTimestamp
-                        pendingSpeedTests.remove(msg.originalTimestamp)
-                        Log.d(TAG, "Speed test completed: Ping=${rttMs}ms from originId=${msg.senderOriginId}")
-                        
-                        // Update peer latencies map
-                        val currentMap = _peerLatencies.value.toMutableMap()
-                        currentMap[msg.senderOriginId] = rttMs
-                        _peerLatencies.value = currentMap
+                        // FIX: Only process the pong if we were the one who sent the ping
+                        if (pendingSpeedTests.remove(msg.originalTimestamp) != null) {
+                            val rttMs = System.currentTimeMillis() - msg.originalTimestamp
+                            Log.d(TAG, "Speed test completed: Ping=${rttMs}ms from originId=${msg.senderOriginId}")
+                            
+                            // Update peer latencies map
+                            val currentMap = _peerLatencies.value.toMutableMap()
+                            currentMap[msg.senderOriginId] = rttMs
+                            _peerLatencies.value = currentMap
+                        }
                     }
                     else -> {
                         Log.d(TAG, "Received message type: ${msg::class.simpleName}")
@@ -448,8 +449,6 @@ class PeerSyncEngine private constructor(private val context: Context) {
         }
     }
 
-    private var lastMusicSeqIndices = mutableMapOf<Byte, UShort>()
-
     private fun observeEndpointDisconnects() {
         scope.launch {
             wifiSocketController.endpointDisconnected.collect { endpointId ->
@@ -551,6 +550,22 @@ class PeerSyncEngine private constructor(private val context: Context) {
         }
     }
 
+    private fun observeSessionInfoForSeqResets() {
+        scope.launch {
+            var prevMembers: List<PeerDevice> = emptyList()
+            sessionInfo.collect { info ->
+                val currById = (info?.members ?: emptyList()).associateBy { it.originId }
+                for (old in prevMembers) {
+                    val curr = currById[old.originId]
+                    if (curr == null || curr.deviceId != old.deviceId) {
+                        audioBridge.resetPeerSeq(old.originId)
+                    }
+                }
+                prevMembers = info?.members ?: emptyList()
+            }
+        }
+    }
+
     private fun observeAudioBridgeOutgoingFrames() {
         scope.launch {
             audioBridge.outgoingFrames.collect { frame ->
@@ -585,24 +600,10 @@ class PeerSyncEngine private constructor(private val context: Context) {
                 // when the host echoes our own packets back to us.
                 if (packet.header.originId == _myOriginId.value) return@collect
 
-                // Check music sequence ordering
-                if (packet.header.payloadFlag == AudioPacketHeader.FLAG_MUSIC) {
-                    val originId = packet.header.originId
-                    val seq = packet.header.sequenceIndex
-                    val lastSeq = lastMusicSeqIndices[originId]
-                    if (lastSeq != null) {
-                        val diff = (seq.toInt() - lastSeq.toInt()).toShort().toInt()
-                        if (diff < 0 && diff > -30000) {
-                            // Drop out of order packet for this specific originId
-                            return@collect
-                        }
-                    }
-                    lastMusicSeqIndices[originId] = seq
-                }
-
                 audioBridge.feedReceivedPacket(
                     originId = packet.header.originId,
                     flag = packet.header.payloadFlag,
+                    seqIndex = packet.header.sequenceIndex.toShort(),
                     payload = packet.payload
                 )
                 

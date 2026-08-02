@@ -58,10 +58,14 @@ class PeerSyncService : Service() {
         when (intent?.action) {
             ACTION_START -> {
                 val notification = buildNotification()
-                val fgsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-                } else {
-                    0
+                val fgsType = when {
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> {
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                    }
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> {
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                    }
+                    else -> 0
                 }
                 ServiceCompat.startForeground(
                     this,

@@ -8,7 +8,6 @@ add_library(
     jni_bridge.cpp
     audio_engine.cpp
     ring_buffer.cpp
-    jitter_buffer.cpp
     mixer.cpp
     opus_codec.cpp
     webrtc_vad.cpp

@@ -25,18 +25,18 @@ The system enables a minimum of five (5) Android devices to communicate simultan
 
 ## 2. System Architecture & Network Topology
 
-### 2.1 Network Model: Local Star Topology via Google Nearby Connections API
-The system operates via the **Google Nearby Connections API** using a Hub-and-Spoke structure with the P2P_CLUSTER strategy.
+### 2.1 Network Model: Local Star Topology via Wi-Fi Direct P2P
+The system operates via **Wi-Fi Direct P2P (`WifiP2pManager`) + raw TCP/UDP Sockets** using a Hub-and-Spoke structure.
 * **The Hub (GO):** The session creator becomes the Group Owner (GO) and manages the network group. The GO receives all audio streams from connected peers, relays them to all other participants, and controls media playback.
-* **The Spokes:** Client devices discover and connect to the GO's advertised session. All audio and control traffic flows through the GO via the Nearby Connections API, minimizing point-to-point wireless interference.
-* **Bandwidth Efficiency:** The Nearby Connections API intelligently selects the best available transport (Wi-Fi Direct, Bluetooth, or other local mechanisms) based on device capabilities and signal conditions. Pure Bluetooth is avoided where possible to handle 5+ simultaneous full-duplex voice streams plus high-fidelity music.
+* **The Spokes:** Client devices discover and connect to the GO's advertised Wi-Fi Direct session. All audio and control traffic flows through the GO via raw sockets, minimizing point-to-point wireless interference.
+* **Bandwidth Efficiency:** Wi-Fi Direct provides the necessary high-bandwidth, low-latency transport required to handle 5+ simultaneous full-duplex voice streams plus high-fidelity music, avoiding the bandwidth limitations of Bluetooth.
 
 ### 2.2 Dual-Plane Network Architecture
-To optimize latency and system stability, network traffic is logically segregated into two concurrent planes over the Nearby Connections API:
-* **The Control Plane:** Manages session state, connection handshakes, member list updates, media playback controls (Play/Pause/Skip), and heartbeat signals.
-* **The Data Plane:** Dedicated to high-speed, stateless streaming of audio bytes. Audio frames are transmitted as individual packets with headers identifying source and payload type. If packet loss occurs due to range limitations, the system discards the lost frames and plays the next chronological packet to prevent voice lag.
+To optimize latency and system stability, network traffic is logically segregated into two concurrent planes over the Wi-Fi Direct connection:
+* **The Control Plane (TCP):** Manages session state, connection handshakes, member list updates, media playback controls (Play/Pause/Skip), and heartbeat signals.
+* **The Data Plane (UDP):** Dedicated to high-speed, stateless streaming of audio bytes. Audio frames are transmitted as individual packets with headers identifying source and payload type. If packet loss occurs due to range limitations, the system discards the lost frames and plays the next chronological packet to prevent voice lag.
 
-Both planes utilize the underlying Nearby Connections API, which abstracts the transport layer (Wi-Fi Direct, Bluetooth, or other mechanisms) to ensure reliable, low-latency delivery suitable for real-time audio communication.
+Both planes utilize raw sockets over the Wi-Fi Direct P2P interface to ensure reliable, low-latency delivery suitable for real-time audio communication.
 
 ┌──────────────────────┐
 │  Group Owner (Hub)   │
@@ -63,8 +63,8 @@ Both planes utilize the underlying Nearby Connections API, which abstracts the t
 ## 3. Functional Requirements
 
 ### 3.1 Peer Discovery & Session Management (F-01)
-* **Autonomous Discovery:** The system utilizes the Google Nearby Connections API to discover and advertise PeerSync sessions. The session creator (GO) advertises a unique, encrypted service with a custom endpoint identifier. Discovering devices scan for active PeerSync advertisements and display found sessions without requiring manual IP entry.
-* **Automatic Pairing:** Devices running the app must present a 6-digit numeric PIN to join a session. The PIN is validated by the GO before the device is added to the active member list.
+* **Autonomous Discovery:** The system utilizes Wi-Fi Direct scanning to discover and advertise PeerSync sessions. The session creator (GO) advertises a unique SSID (`DIRECT-PS-<sessionName>`). Discovering devices scan for active PeerSync advertisements and display found sessions without requiring manual IP entry.
+* **Automatic Pairing:** Devices running the app must present an 8-digit numeric PIN (WPA2 standard minimum) to join a session. The PIN is validated by the GO before the device is added to the active member list.
 * **Network Resilience & Handover:** If a Client Spoke disconnects, the rest of the group conversation must remain uninterrupted. If the Group Owner disconnects unexpectedly, the remaining clients must execute a silent background election protocol to promote the highest-ranked remaining client to Group Owner. The new GO re-advertises the session, and all clients reconnect with the same session PIN.
 
 ### 3.2 Full-Duplex Audio Engine (F-02)
@@ -106,9 +106,9 @@ Both planes utilize the underlying Nearby Connections API, which abstracts the t
 
 | Test Case ID | Feature Tested | Verification Condition | Expected Result |
 | :--- | :--- | :--- | :--- |
-| **TC-01** | Multi-Peer Capacity | Connect 5 Android devices via Nearby Connections API. | Group Owner maps 4 distinct client connections. All 5 mics stream concurrently without dropped connections. |
+| **TC-01** | Multi-Peer Capacity | Connect 5 Android devices via Wi-Fi Direct P2P. | Group Owner maps 4 distinct client connections. All 5 mics stream concurrently without dropped connections. |
 | **TC-02** | Audio Ducking | Group Owner plays a local MP3 file while User B begins speaking. | Receiving devices decode the Voice header packet, immediately attenuating the Music output level by 60%. |
-| **TC-03** | System Persistence | Lock the device screen on 3 out of 5 connected client phones. | Foreground service retains wake-locks; Nearby Connections remain fully active; voice feed continues. |
+| **TC-03** | System Persistence | Lock the device screen on 3 out of 5 connected client phones. | Foreground service retains wake-locks; Wi-Fi Direct connection remains fully active; voice feed continues. |
 
 ### 5.2 Recommended Structural References
 Developers working on this implementation should model their system loops after the following conceptual models:

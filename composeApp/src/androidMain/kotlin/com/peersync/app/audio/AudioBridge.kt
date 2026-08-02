@@ -30,6 +30,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.channels.BufferOverflow
 
 data class EncodedAudioFrame(
     val flag: Byte,
@@ -60,7 +61,7 @@ class AudioBridge(private val context: Context) {
     private var currentTargetDeviceId: Int? = null
     private var activeSessionId: Int = 0
 
-    private val _outgoingFrames = MutableSharedFlow<EncodedAudioFrame>(extraBufferCapacity = 64)
+    private val _outgoingFrames = MutableSharedFlow<EncodedAudioFrame>(extraBufferCapacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     val outgoingFrames: SharedFlow<EncodedAudioFrame> = _outgoingFrames.asSharedFlow()
 
     private val _streamErrors = MutableSharedFlow<String>(extraBufferCapacity = 16)
@@ -75,7 +76,7 @@ class AudioBridge(private val context: Context) {
     private external fun nativeInit(): Boolean
     private external fun nativeStartAudio(sessionId: Int): Boolean
     private external fun nativeStopAudio()
-    private external fun nativeFeedReceivedPacket(originId: Byte, flag: Byte, payload: ByteArray)
+    private external fun nativeFeedReceivedPacket(originId: Byte, flag: Byte, seqIndex: Short, payload: ByteArray)
     private external fun nativeFeedLocalMusic(pcmData: ByteArray)
     private external fun nativeGetLocalMusicFreeSpace(): Int
     private external fun nativeClearLocalMusicBuffers()
@@ -87,6 +88,7 @@ class AudioBridge(private val context: Context) {
     private external fun nativeSetPeerVolume(originId: Byte, volume: Float)
     private external fun nativeSetDeviceIds(inputDeviceId: Int, outputDeviceId: Int)
     private external fun nativeIsAudioRunning(): Boolean
+    private external fun nativeResetPeerSeq(originId: Byte)
 
     private var aec: AcousticEchoCanceler? = null
     private var ns: NoiseSuppressor? = null
@@ -180,6 +182,10 @@ class AudioBridge(private val context: Context) {
 
     fun isAudioRunning(): Boolean {
         return nativeIsAudioRunning()
+    }
+
+    fun resetPeerSeq(originId: Byte) {
+        nativeResetPeerSeq(originId)
     }
 
     fun getAvailableBluetoothDevices(): List<AudioDeviceModel> {
@@ -418,8 +424,8 @@ class AudioBridge(private val context: Context) {
          }
      }
 
-    fun feedReceivedPacket(originId: Byte, flag: Byte, payload: ByteArray) {
-        nativeFeedReceivedPacket(originId, flag, payload)
+    fun feedReceivedPacket(originId: Byte, flag: Byte, seqIndex: Short, payload: ByteArray) {
+        nativeFeedReceivedPacket(originId, flag, seqIndex, payload)
     }
 
     fun setVadMode(mode: Int) {

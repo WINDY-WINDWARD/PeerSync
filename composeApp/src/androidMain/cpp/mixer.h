@@ -1,9 +1,6 @@
 #ifndef PEERSYNC_MIXER_H
 #define PEERSYNC_MIXER_H
 
-#include <vector>
-#include <map>
-#include <mutex>
 #include <cstdint>
 #include <cstddef>
 
@@ -12,8 +9,12 @@ public:
     AudioMixer();
     ~AudioMixer() = default;
 
+    // voiceStreams: contiguous array of pointers to per-peer PCM buffers,
+    // each holding sampleCount samples. No std::map — built per-callback
+    // by the audio thread from pre-allocated scratch memory.
     void mixFrame(
-        const std::map<uint8_t, const int16_t*>& voiceStreams,
+        const int16_t* const* voiceStreams,
+        size_t streamCount,
         const int16_t* musicStream,
         int16_t* outMixedPcm,
         size_t sampleCount

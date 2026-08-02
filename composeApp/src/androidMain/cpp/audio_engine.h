@@ -7,7 +7,6 @@
 #include "opus_codec.h"
 
 #include <aaudio/AAudio.h>
-#include <map>
 #include <mutex>
 #include <atomic>
 #include <vector>
@@ -23,7 +22,7 @@ public:
     void setDeviceIds(int inputDeviceId, int outputDeviceId);
     bool isRunning() const { return isRunning_.load(); }
 
-    void feedReceivedPacket(uint8_t originId, uint8_t flag, const uint8_t* payload, size_t payloadSize);
+    void feedReceivedPacket(uint8_t originId, uint8_t flag, uint16_t sequenceIndex, const uint8_t* payload, size_t payloadSize);
     
     // Feed locally decoded 16kHz mono music to be mixed into the microphone stream
     size_t feedLocalMusic(const int16_t* pcm, size_t sampleCount);
@@ -47,6 +46,10 @@ public:
     typedef void (*StreamErrorCallback)(const char* errorMessage);
     void setStreamErrorCallback(StreamErrorCallback cb) { streamErrorCallback_ = cb; }
 
+    // Called from Kotlin when a peer leaves or rejoins (endpoint changed) so
+    // a restarted sender's sequence (from 0) is accepted as a fresh stream.
+    void resetPeerSeq(uint8_t originId) { hasSeq_[originId].store(false, std::memory_order_relaxed); }
+
     static void OnStreamError(AAudioStream* stream, void* userData, aaudio_result_t error);
 
     aaudio_data_callback_result_t onAudioInput(const int16_t* audioData, int32_t numFrames);
@@ -54,6 +57,15 @@ public:
 
 private:
     static constexpr size_t VOICE_FRAME_SAMPLES = 320; // 20ms @ 16kHz mono, network-safe packet size
+
+    // Upper bound for one AAudio callback burst at 16kHz (typical: 160-480).
+    static constexpr size_t MAX_CALLBACK_FRAMES = 2048;
+    // Max simultaneous peers mixed per callback (pre-allocated scratch slots).
+    static constexpr size_t MAX_MIX_PEERS = 16;
+    // Max decodable samples per received packet (40ms @ 16kHz).
+    static constexpr size_t MAX_DECODE_SAMPLES = VOICE_FRAME_SAMPLES * 4;
+    // Fixed circular capture accumulator capacity (200ms @ 16kHz).
+    static constexpr size_t CAPTURE_RING_SAMPLES = VOICE_FRAME_SAMPLES * 10;
 
     AAudioStream* inputStream_{nullptr};
     AAudioStream* outputStream_{nullptr};
@@ -93,7 +105,7 @@ private:
     bool clientBuffering_[256];
     // Consecutive all-empty callback counter per client. Audio-thread only.
     int  clientStarveCount_[256];
-    std::mutex ringMapMutex_; // Guards ring lifecycle (create/write/clear/delete)
+    std::mutex ringMapMutex_; // Guards ring lifecycle ONLY (create/clear/delete). Never held on the audio thread or the per-packet write path.
     
     // Holds the locally decoded music (16kHz mono) to be mixed into the mic stream and speaker.
     // Capacity is 2 seconds (32000 samples).
@@ -108,7 +120,24 @@ private:
     std::vector<int16_t> outputMonoScratch_;
     std::vector<int16_t> localMusicInScratch_;
     std::vector<int16_t> localMusicOutScratch_;
-    std::vector<int16_t> captureAccumulator_;
+    
+    // Pre-allocated per-peer mixing scratch — the AAudio output thread must
+    // never allocate. Slot count is fixed; samples per slot bounded by
+    // MAX_CALLBACK_FRAMES.
+    int16_t peerMixScratch_[MAX_MIX_PEERS][MAX_CALLBACK_FRAMES];
+    // Network-thread decode scratch (replaces per-packet heap vector).
+    int16_t decodeScratch_[MAX_DECODE_SAMPLES];
+    // Drain target for active peers beyond MAX_MIX_PEERS (prevents ring wedge).
+    int16_t drainScratch_[MAX_CALLBACK_FRAMES];
+    bool mixTruncationLogged_{false}; // audio-thread only
+    // Duplicate/late packet filtering (UDP delivers unordered). Written only
+    // on the network thread; reset under ringMapMutex_ in stop().
+    std::atomic<uint16_t> lastSeq_[256];
+    std::atomic<bool>     hasSeq_[256];
+    // Fixed circular capture accumulator (input thread only — no atomics).
+    int16_t captureRing_[CAPTURE_RING_SAMPLES];
+    size_t captureHead_{0};  // index of oldest stored sample
+    size_t captureCount_{0}; // number of samples currently stored
 
     AudioFrameCallback frameCallback_{nullptr};
     StreamErrorCallback streamErrorCallback_{nullptr};

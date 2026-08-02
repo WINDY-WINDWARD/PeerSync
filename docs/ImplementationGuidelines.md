@@ -1349,3 +1349,34 @@ Before writing any code, verify that this document answers every question:
 - [x] Will bandwidth be sufficient? → §12
 - [x] What library versions to use? → §13
 - [x] What do the screens look like? → §14
+
+---
+
+## 16. System Invariants
+
+These invariants must be maintained throughout the implementation. Any violation indicates a bug.
+
+### 16.1 Ring Buffer Invariants
+
+- **Generation Guard Synchronization:** Both `RingBuffer::read()` and `RingBuffer::write()` are generation-guarded against concurrent `clear()`. If `clear()` is called (which increments the generation counter), any in-flight read or write that started before the clear will detect the generation mismatch and discard its data rather than committing stale state.
+- **Clear-On-Full Resync:** When a ring buffer reaches capacity during write (drift resync), the clear is performed only by the single network producer thread. Both read and write are generation-guarded, so concurrent playback reads will safely detect the clear and drop stale buffered data.
+
+### 16.2 Sequence State Management
+
+- **Membership-Driven Seq Reset:** Peer sequence state is reset via membership-diff observation in the Kotlin layer (via `PeerSyncEngine.observeSessionInfoForSeqResets()`), never by packet heuristics (e.g., sequence jump thresholds). A seq reset is triggered when:
+  - A peer leaves the session (removed from member list), OR
+  - A peer rejoins with a new device endpoint (detected by `deviceId` change within the same `originId`)
+- **No Negative-Sequence-Diff Heuristics:** The native code does not drop packets based on heuristic thresholds like -30000 sequence difference. Instead, the membership observer provides the ground truth for when to reset seq state.
+
+### 16.3 Audio Input Burst Guard
+
+- **Pathological Burst Prevention:** The `onAudioInput` callback contains a guard that resets the capture accumulator if a single callback delivers >= `CAPTURE_RING_SAMPLES` (200ms at 16kHz). This prevents size_t underflow in overflow calculations.
+
+### 16.4 Output Mixing Limits
+
+- **Drain Oversized Peer Sets:** The `onAudioOutput` callback iterates through all 256 potential peers. For the first `MAX_MIX_PEERS` (16) active peers with data, frames are mixed normally. Peers beyond this limit are drained (data read and discarded without mixing) to prevent ring buffer wedge and network-side drops. A per-session log is emitted once when truncation begins.
+
+### 16.5 Session Lifecycle Synchronization
+
+- **Mutex-Guarded Clear on Start:** When `AudioEngine::start()` executes, it clears all client ring buffers, resets buffering state, and resets sequence tracking under the ringMapMutex. This wipes any residue from previous sessions before playback resumes.
+- **No Epoch Mechanism:** The prior `sessionEpoch_` mechanism has been removed. The generation guard in ring buffers is now the sole guard against concurrent clear. The mutex guards only the client ring buffer lifecycle (creation, deletion).

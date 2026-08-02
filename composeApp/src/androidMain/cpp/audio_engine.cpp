@@ -2,6 +2,7 @@
 #include <android/log.h>
 #include <vector>
 #include <cstring>
+#include <algorithm>
 
 #define LOG_TAG "PeerSyncNativeAudio"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -50,12 +51,13 @@ AudioEngine::AudioEngine() {
         peerGains_[i].store(1.0f, std::memory_order_relaxed);
         clientBuffering_[i]   = true; // wait for initial 60ms cushion before draining
         clientStarveCount_[i] = 0;
+        lastSeq_[i].store(0, std::memory_order_relaxed);
+        hasSeq_[i].store(false, std::memory_order_relaxed);
     }
     inputMonoScratch_.reserve(VOICE_FRAME_SAMPLES * 4);
     outputMonoScratch_.reserve(VOICE_FRAME_SAMPLES * 4);
     localMusicInScratch_.reserve(VOICE_FRAME_SAMPLES * 4);
     localMusicOutScratch_.reserve(VOICE_FRAME_SAMPLES * 4);
-    captureAccumulator_.reserve(VOICE_FRAME_SAMPLES * 8);
 }
 
 AudioEngine::~AudioEngine() {
@@ -76,7 +78,8 @@ bool AudioEngine::start(int sessionId) {
     // Ensure stale state from previous runs is cleared.
     localMusicInRingBuffer_.clear();
     localMusicOutRingBuffer_.clear();
-    captureAccumulator_.clear();
+    captureHead_ = 0;
+    captureCount_ = 0;
 
     AAudioStreamBuilder* builder = nullptr;
     AAudio_createStreamBuilder(&builder);
@@ -165,6 +168,21 @@ bool AudioEngine::start(int sessionId) {
     // Set running BEFORE requestStart: the data callbacks fire on AAudio threads
     isRunning_.store(true);
 
+    // Belt-and-braces: clear all client rings and reset state, wiping any
+    // residue from previous sessions before playback resumes.
+    {
+        std::lock_guard<std::mutex> lock(ringMapMutex_);
+        for (int i = 0; i < 256; ++i) {
+            RingBuffer* rb = clientRingBuffers_[i].load(std::memory_order_acquire);
+            if (rb) {
+                rb->clear();
+            }
+            clientBuffering_[i] = true;
+            clientStarveCount_[i] = 0;
+            hasSeq_[i].store(false, std::memory_order_relaxed);
+        }
+    }
+
     AAudioStream_requestStart(inputStream_);
     AAudioStream_requestStart(outputStream_);
     
@@ -191,7 +209,7 @@ void AudioEngine::stop() {
     }
 
     // Output stream stopped
-
+    
     // Reset per-client ring buffers (do not delete here; output callbacks may
     // still be winding down while streams are stopping).
     std::lock_guard<std::mutex> lock(ringMapMutex_);
@@ -202,10 +220,12 @@ void AudioEngine::stop() {
         }
         clientBuffering_[i] = true; // reset cushion for next session
         clientStarveCount_[i] = 0;
+        hasSeq_[i].store(false, std::memory_order_relaxed);
     }
     localMusicInRingBuffer_.clear();
     localMusicOutRingBuffer_.clear();
-    captureAccumulator_.clear();
+    captureHead_ = 0;
+    captureCount_ = 0;
 
     LOGI("AAudio Engine stopped");
 }
@@ -220,6 +240,13 @@ aaudio_data_callback_result_t AudioEngine::onAudioInput(const int16_t* audioData
     if (!isRunning_.load()) return AAUDIO_CALLBACK_RESULT_STOP;
 
     if (audioData == nullptr || numFrames <= 0) {
+        return AAUDIO_CALLBACK_RESULT_CONTINUE;
+    }
+
+    // Pathological burst guard: reset accumulator rather than underflow size_t.
+    if (numFrames >= static_cast<int32_t>(CAPTURE_RING_SAMPLES)) {
+        captureHead_ = 0;
+        captureCount_ = 0;
         return AAUDIO_CALLBACK_RESULT_CONTINUE;
     }
 
@@ -260,20 +287,39 @@ aaudio_data_callback_result_t AudioEngine::onAudioInput(const int16_t* audioData
     }
     monoPtr = inputMonoScratch_.data();
 
-    // Accumulate and emit fixed 20ms voice packets. This prevents variable-size
-    // memcpy packets from tearing and producing static/choppiness.
-    captureAccumulator_.insert(
-        captureAccumulator_.end(),
-        monoPtr,
-        monoPtr + static_cast<size_t>(numFrames)
-    );
+    // Accumulate into a fixed circular buffer and emit fixed 20ms voice
+    // packets. No heap allocation, no O(n) erase — input-thread only.
+    // If a stall would overflow the ring, drop the OLDEST samples first.
+    if (captureCount_ + static_cast<size_t>(numFrames) > CAPTURE_RING_SAMPLES) {
+        size_t overflow = captureCount_ + static_cast<size_t>(numFrames) - CAPTURE_RING_SAMPLES;
+        captureHead_ = (captureHead_ + overflow) % CAPTURE_RING_SAMPLES;
+        captureCount_ -= overflow;
+    }
+    {
+        size_t writePos = (captureHead_ + captureCount_) % CAPTURE_RING_SAMPLES;
+        size_t firstPart = std::min(static_cast<size_t>(numFrames), CAPTURE_RING_SAMPLES - writePos);
+        std::memcpy(captureRing_ + writePos, monoPtr, firstPart * sizeof(int16_t));
+        size_t secondPart = static_cast<size_t>(numFrames) - firstPart;
+        if (secondPart > 0) {
+            std::memcpy(captureRing_, monoPtr + firstPart, secondPart * sizeof(int16_t));
+        }
+        captureCount_ += static_cast<size_t>(numFrames);
+    }
 
     uint8_t flag = 0x01;
     uint8_t encodedBuffer[VOICE_FRAME_SAMPLES * sizeof(int16_t)];
+    int16_t frame[VOICE_FRAME_SAMPLES];
 
-    while (captureAccumulator_.size() >= VOICE_FRAME_SAMPLES) {
+    while (captureCount_ >= VOICE_FRAME_SAMPLES) {
+        size_t firstPart = std::min(VOICE_FRAME_SAMPLES, CAPTURE_RING_SAMPLES - captureHead_);
+        std::memcpy(frame, captureRing_ + captureHead_, firstPart * sizeof(int16_t));
+        size_t secondPart = VOICE_FRAME_SAMPLES - firstPart;
+        if (secondPart > 0) {
+            std::memcpy(frame + firstPart, captureRing_, secondPart * sizeof(int16_t));
+        }
+
         int encodedBytes = voiceCodec_.encode(
-            captureAccumulator_.data(),
+            frame,
             VOICE_FRAME_SAMPLES,
             encodedBuffer,
             sizeof(encodedBuffer)
@@ -283,19 +329,8 @@ aaudio_data_callback_result_t AudioEngine::onAudioInput(const int16_t* audioData
             frameCallback_(flag, encodedBuffer, static_cast<size_t>(encodedBytes));
         }
 
-        captureAccumulator_.erase(
-            captureAccumulator_.begin(),
-            captureAccumulator_.begin() + static_cast<std::ptrdiff_t>(VOICE_FRAME_SAMPLES)
-        );
-    }
-
-    // Bound accumulator growth on stalls/dropouts.
-    const size_t maxBufferedSamples = VOICE_FRAME_SAMPLES * 10;
-    if (captureAccumulator_.size() > maxBufferedSamples) {
-        captureAccumulator_.erase(
-            captureAccumulator_.begin(),
-            captureAccumulator_.end() - static_cast<std::ptrdiff_t>(VOICE_FRAME_SAMPLES)
-        );
+        captureHead_ = (captureHead_ + VOICE_FRAME_SAMPLES) % CAPTURE_RING_SAMPLES;
+        captureCount_ -= VOICE_FRAME_SAMPLES;
     }
 
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
@@ -308,63 +343,74 @@ aaudio_data_callback_result_t AudioEngine::onAudioOutput(int16_t* audioData, int
         return AAUDIO_CALLBACK_RESULT_CONTINUE;
     }
 
-    // Build voice stream map for mixer: one temp buffer per active client.
-    // We do NOT lock ringMapMutex_ here — the audio thread must never block.
-    // Iterating fixed arrays of atomics is 100% thread-safe.
-    std::map<uint8_t, const int16_t*> voiceStreams;
-    std::vector<std::vector<int16_t>> tempBuffers;
+    // Build flat mix-input array from pre-allocated scratch. Zero heap
+    // allocations, zero locks on the audio thread. Iterating fixed arrays
+    // of atomics is thread-safe.
+    const int16_t* mixInputs[MAX_MIX_PEERS];
+    size_t mixCount = 0;
 
-    for (int i = 0; i < 256; ++i) {
-        RingBuffer* rb = clientRingBuffers_[i].load(std::memory_order_acquire);
-        if (!rb) continue;
+    if (numFrames <= static_cast<int32_t>(MAX_CALLBACK_FRAMES)) {
+        for (int i = 0; i < 256; ++i) {
+            RingBuffer* rb = clientRingBuffers_[i].load(std::memory_order_acquire);
+            if (!rb) continue;
 
-        size_t avail = rb->availableRead();
+            size_t avail = rb->availableRead();
 
-        // Initial jitter cushion: wait until VOICE_JITTER_CUSHION samples (60ms)
-        // have accumulated before first drain. Absorbs startup Wi-Fi jitter.
-        if (clientBuffering_[i]) {
-            if (avail < VOICE_JITTER_CUSHION) {
-                continue; // still filling — output silence for this client
-            }
-            clientBuffering_[i]   = false;
-            clientStarveCount_[i] = 0;
-        }
-
-        if (avail == 0) {
-            // Ring is empty this callback. Count consecutive empty callbacks.
-            // A single late 20ms packet should produce one callback of silence
-            // (~10ms), NOT a forced 60ms re-buffering mute. Only re-arm the
-            // cushion after VOICE_STARVATION_LIMIT consecutive empty callbacks
-            // (~150-300ms of true dropout).
-            clientStarveCount_[i]++;
-            if (clientStarveCount_[i] >= VOICE_STARVATION_LIMIT) {
-                clientBuffering_[i]   = true;
+            // Initial jitter cushion (unchanged semantics)
+            if (clientBuffering_[i]) {
+                if (avail < VOICE_JITTER_CUSHION) {
+                    continue;
+                }
+                clientBuffering_[i]   = false;
                 clientStarveCount_[i] = 0;
             }
-            continue; // output silence for this client this callback
-        }
 
-        // Data is available — reset starvation counter and drain.
-        clientStarveCount_[i] = 0;
+            if (avail == 0) {
+                // Starvation tracking (unchanged semantics)
+                clientStarveCount_[i]++;
+                if (clientStarveCount_[i] >= VOICE_STARVATION_LIMIT) {
+                    clientBuffering_[i]   = true;
+                    clientStarveCount_[i] = 0;
+                }
+                continue;
+            }
 
-        std::vector<int16_t> buf(numFrames, 0);
-        rb->read(buf.data(), static_cast<size_t>(numFrames));
-        // buf is pre-zeroed; any unread samples (ring shorter than numFrames)
-        // are naturally zero-padded — no hard mute, just a tiny glitch.
+            clientStarveCount_[i] = 0;
 
-        // Apply peer-specific gain
-        float gain = peerGains_[i].load(std::memory_order_relaxed);
-        if (gain != 1.0f) {
-            for (size_t j = 0; j < buf.size(); ++j) {
-                float sample = buf[j] * gain;
-                if (sample > 32767.0f) sample = 32767.0f;
-                else if (sample < -32768.0f) sample = -32768.0f;
-                buf[j] = static_cast<int16_t>(sample);
+            if (mixCount < MAX_MIX_PEERS) {
+                int16_t* scratch = peerMixScratch_[mixCount];
+                size_t got = rb->read(scratch, static_cast<size_t>(numFrames));
+                // Zero-pad any shortfall (ring shorter than numFrames) — soft
+                // glitch instead of a hard mute, same as before.
+                if (got < static_cast<size_t>(numFrames)) {
+                    std::memset(scratch + got, 0,
+                                (static_cast<size_t>(numFrames) - got) * sizeof(int16_t));
+                }
+
+                // Apply peer-specific gain in place
+                float gain = peerGains_[i].load(std::memory_order_relaxed);
+                if (gain != 1.0f) {
+                    for (int32_t j = 0; j < numFrames; ++j) {
+                        float sample = scratch[j] * gain;
+                        if (sample > 32767.0f) sample = 32767.0f;
+                        else if (sample < -32768.0f) sample = -32768.0f;
+                        scratch[j] = static_cast<int16_t>(sample);
+                    }
+                }
+
+                mixInputs[mixCount++] = scratch;
+            } else {
+                // Beyond mixing capacity: drain so the ring can't fill and wedge
+                // (which would cause network-side drops), but don't mix.
+                if (!mixTruncationLogged_) {
+                    mixTruncationLogged_ = true;
+                    LOGE("Active peers exceed MAX_MIX_PEERS=%d — extra peers drained, not mixed", (int)MAX_MIX_PEERS);
+                }
+                rb->read(drainScratch_, static_cast<size_t>(numFrames));
             }
         }
-
-        tempBuffers.push_back(std::move(buf));
-        voiceStreams[static_cast<uint8_t>(i)] = tempBuffers.back().data();
+    } else {
+        LOGE("onAudioOutput: numFrames=%d exceeds MAX_CALLBACK_FRAMES, peers muted this callback", numFrames);
     }
 
     float musicGain = localMusicGain_.load(std::memory_order_relaxed);
@@ -377,10 +423,10 @@ aaudio_data_callback_result_t AudioEngine::onAudioOutput(int16_t* audioData, int
 
     const int outChannels = (outputChannelCount_ > 0) ? outputChannelCount_ : 1;
     if (outChannels == 1) {
-        mixer_.mixFrame(voiceStreams, localMusicOutScratch_.data(), audioData, static_cast<size_t>(numFrames));
+        mixer_.mixFrame(mixInputs, mixCount, localMusicOutScratch_.data(), audioData, static_cast<size_t>(numFrames));
     } else {
         outputMonoScratch_.assign(static_cast<size_t>(numFrames), 0);
-        mixer_.mixFrame(voiceStreams, localMusicOutScratch_.data(), outputMonoScratch_.data(), static_cast<size_t>(numFrames));
+        mixer_.mixFrame(mixInputs, mixCount, localMusicOutScratch_.data(), outputMonoScratch_.data(), static_cast<size_t>(numFrames));
 
         for (int32_t i = 0; i < numFrames; ++i) {
             const int16_t s = outputMonoScratch_[static_cast<size_t>(i)];
@@ -422,21 +468,30 @@ void AudioEngine::clearLocalMusicBuffers() {
     localMusicOutRingBuffer_.clear();
 }
 
-void AudioEngine::feedReceivedPacket(uint8_t originId, uint8_t flag, const uint8_t* payload, size_t payloadSize) {
+void AudioEngine::feedReceivedPacket(uint8_t originId, uint8_t flag, uint16_t sequenceIndex, const uint8_t* payload, size_t payloadSize) {
     if (flag != 0x01) return; // only voice packets
 
-    // Drop packets that originated from this device — they must never be played
-    // back locally (self-echo / feedback) for VOICE.
+    // Drop packets that originated from this device (self-echo).
     if (originId == myOriginId_.load()) return;
 
-    // Decode: stub codec is a memcpy, payloadSize bytes → payloadSize/2 samples
+    // Duplicate / late-packet drop (UDP is unordered). Wrap-aware diff:
+    // diff <= 0 means already-seen or older than last accepted. A forward
+    // jump (loss or sender restart) is accepted immediately.
+    if (hasSeq_[originId].load(std::memory_order_relaxed)) {
+        int32_t diff = static_cast<int32_t>(static_cast<int16_t>(
+            static_cast<uint16_t>(sequenceIndex - lastSeq_[originId].load(std::memory_order_relaxed))));
+        if (diff <= 0) return;
+    }
+    lastSeq_[originId].store(sequenceIndex, std::memory_order_relaxed);
+    hasSeq_[originId].store(true, std::memory_order_relaxed);
+
+    // Decode into fixed network-thread scratch (stub codec is a memcpy).
     size_t sampleCount = payloadSize / sizeof(int16_t);
     if (sampleCount == 0) return;
+    if (sampleCount > MAX_DECODE_SAMPLES) sampleCount = MAX_DECODE_SAMPLES;
+    voiceCodec_.decode(payload, payloadSize, decodeScratch_, sampleCount);
 
-    std::vector<int16_t> pcm(sampleCount);
-    voiceCodec_.decode(payload, payloadSize, pcm.data(), sampleCount);
-
-    // Get or create the ring buffer for this client.
+    // Get or create the ring buffer for this client (mutex = lifecycle only).
     RingBuffer* rb = clientRingBuffers_[originId].load(std::memory_order_acquire);
     if (rb == nullptr) {
         std::lock_guard<std::mutex> lock(ringMapMutex_);
@@ -444,28 +499,21 @@ void AudioEngine::feedReceivedPacket(uint8_t originId, uint8_t flag, const uint8
         if (rb == nullptr) {
             rb = new RingBuffer(RING_CAPACITY);
             clientRingBuffers_[originId].store(rb, std::memory_order_release);
-            clientBuffering_[originId]   = true; // wait for 60ms cushion before draining
+            clientBuffering_[originId]   = true;
             clientStarveCount_[originId] = 0;
             LOGI("Created ring buffer for client originId=%u", originId);
         }
     }
 
-    // Write decoded PCM into the ring buffer. RingBuffer is SPSC; both this
-    // network thread and stop() can mutate buffer state, so keep lifecycle ops
-    // under the same mutex to avoid concurrent clear/delete with write.
-    {
-        std::lock_guard<std::mutex> lock(ringMapMutex_);
-        RingBuffer* live = clientRingBuffers_[originId].load(std::memory_order_acquire);
-        if (live == nullptr) {
-            return;
-        }
-
-        size_t written = live->write(pcm.data(), sampleCount);
-        if (written < sampleCount) {
-            live->clear();
-            live->write(pcm.data(), sampleCount);
-            LOGD("Ring buffer full for originId=%u — cleared stale data", originId);
-        }
+    // Lock protects against concurrent clear() from start()/stop()
+    std::lock_guard<std::mutex> lock(ringMapMutex_);
+    size_t written = rb->write(decodeScratch_, sampleCount);
+    if (written < sampleCount) {
+        // Ring full (sender/receiver clock drift) — hard resync, same as the
+        // original design: drop the backlog, keep playback latency bounded.
+        rb->clear();
+        rb->write(decodeScratch_, sampleCount);
+        LOGD("Ring buffer full for originId=%u — cleared stale data (drift resync)", originId);
     }
 }
 

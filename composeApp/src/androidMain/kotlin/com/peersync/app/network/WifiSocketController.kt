@@ -99,6 +99,10 @@ class WifiSocketController(private val context: Context) {
     private val wifiP2pManager: WifiP2pManager? = context.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
     private val connectivityManager: ConnectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     private val json = Json { ignoreUnknownKeys = true }
+    // UDP data plane for real-time audio (control stays on this TCP plane).
+    private val udpAudioPlane = UdpAudioPlane { packet ->
+        _incomingAudioPackets.tryEmit(packet)
+    }
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     // State flows (compatible with PeerSyncEngine expectations)
@@ -109,7 +113,7 @@ class WifiSocketController(private val context: Context) {
     private val _incomingMessages = MutableSharedFlow<ReceivedControlMessage>()
     val incomingMessages: SharedFlow<ReceivedControlMessage> = _incomingMessages.asSharedFlow()
 
-    private val _incomingAudioPackets = MutableSharedFlow<ReceivedAudioPacket>(extraBufferCapacity = 64)
+    private val _incomingAudioPackets = MutableSharedFlow<ReceivedAudioPacket>(extraBufferCapacity = 64, onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
     val incomingAudioPackets: SharedFlow<ReceivedAudioPacket> = _incomingAudioPackets.asSharedFlow()
 
     private val _endpointDisconnected = MutableSharedFlow<String>()
@@ -182,10 +186,14 @@ class WifiSocketController(private val context: Context) {
                 serverSocket = ServerSocket(HOST_PORT)
                 Log.d(TAG, "TCP Server listening on port $HOST_PORT")
                 
+                // Start UDP audio data plane alongside the TCP control plane
+                udpAudioPlane.startHost()
+                
                 // Listen for incoming client connections
                 while (isHosting && serverSocket != null) {
                     try {
                         val clientSock = serverSocket!!.accept()
+                        clientSock.tcpNoDelay = true  // Disable Nagle: control latency + no small-write stalls
                         val clientId = "${clientSock.inetAddress.hostAddress}:${clientSock.port}"
                         Log.d(TAG, "Client connected: $clientId")
                         
@@ -335,6 +343,7 @@ class WifiSocketController(private val context: Context) {
             val socket = Socket()
             network.bindSocket(socket)
             socket.connect(InetSocketAddress(HOST_ADDRESS, HOST_PORT), 10000)
+            socket.tcpNoDelay = true  // Disable Nagle on the control channel
             
             clientSocket = socket
             Log.d(TAG, "Connected to host socket at $HOST_ADDRESS:$HOST_PORT")
@@ -344,6 +353,9 @@ class WifiSocketController(private val context: Context) {
             val handler = ClientSocketHandler("host", socket, this, isHost = false)
             hostSocketHandler = handler
             handler.start()
+            
+            // Start UDP audio data plane bound to the same P2P network
+            udpAudioPlane.startClient(network)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to connect to host socket: ${e.message}")
             _wifiSocketState.value = WifiSocketState.Error("Failed to connect: ${e.message}")
@@ -353,26 +365,27 @@ class WifiSocketController(private val context: Context) {
     /**
      * Disconnect client from host.
      */
-      private fun disconnectFromHost() {
-         scope.launch {
-             try {
-                 clientSocket?.close()
-                 clientSocket = null
-                 hostSocketHandler?.stop()
-                 hostSocketHandler = null
-                 if (isNetworkCallbackRegistered) {
-                     connectivityManager.unregisterNetworkCallback(networkCallback)
-                     isNetworkCallbackRegistered = false
-                     Log.d(TAG, "Unregistered network callback")
-                 }
-                 _wifiSocketState.value = WifiSocketState.Idle
-                 _endpointDisconnected.emit("host")
-                 Log.d(TAG, "Disconnected from host")
-             } catch (e: Exception) {
-                 Log.e(TAG, "Error disconnecting: ${e.message}")
-             }
-         }
-     }
+    private fun disconnectFromHost() {
+        scope.launch {
+            try {
+                udpAudioPlane.stop()
+                clientSocket?.close()
+                clientSocket = null
+                hostSocketHandler?.stop()
+                hostSocketHandler = null
+                if (isNetworkCallbackRegistered) {
+                    connectivityManager.unregisterNetworkCallback(networkCallback)
+                    isNetworkCallbackRegistered = false
+                    Log.d(TAG, "Unregistered network callback")
+                }
+                _wifiSocketState.value = WifiSocketState.Idle
+                _endpointDisconnected.emit("host")
+                Log.d(TAG, "Disconnected from host")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error disconnecting: ${e.message}")
+            }
+        }
+    }
 
     /**
      * Stop hosting.
@@ -380,6 +393,7 @@ class WifiSocketController(private val context: Context) {
     fun stopHosting() {
         isHosting = false
         try {
+            udpAudioPlane.stop()
             serverSocket?.close()
             serverSocket = null
             clientSockets.values.forEach { it.stop() }
@@ -522,28 +536,10 @@ class WifiSocketController(private val context: Context) {
      * Send audio packet to all connected peers.
      */
     fun sendAudioPacket(header: AudioPacketHeader, payload: ByteArray, targetEndpointId: String? = null, excludeEndpointId: String? = null) {
-        scope.launch {
-            try {
-                val headerBytes = header.toByteArray()
-                val fullPayload = ByteArray(headerBytes.size + payload.size)
-                System.arraycopy(headerBytes, 0, fullPayload, 0, headerBytes.size)
-                System.arraycopy(payload, 0, fullPayload, headerBytes.size, payload.size)
-                
-                if (isHosting) {
-                    // Host: broadcast to all clients (optionally excluding one)
-                    clientSockets.values.forEach { handler ->
-                        if (excludeEndpointId == null || handler.clientId != excludeEndpointId) {
-                            handler.sendFrame(FRAME_TYPE_AUDIO, fullPayload)
-                        }
-                    }
-                } else {
-                    // Client: send to host
-                    hostSocketHandler?.sendFrame(FRAME_TYPE_AUDIO, fullPayload)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error sending audio packet: ${e.message}")
-            }
-        }
+        // Audio rides the UDP data plane (fire-and-forget). targetEndpointId/
+        // excludeEndpointId are unused in the star topology — host broadcast
+        // excludes the origin naturally at the relay (sender key) level.
+        udpAudioPlane.sendAudio(header, payload)
     }
 
     /**
@@ -569,16 +565,9 @@ class WifiSocketController(private val context: Context) {
                 FRAME_TYPE_AUDIO -> {
                     val header = AudioPacketHeader.fromByteArray(framePayload)
                     val payload = framePayload.drop(AudioPacketHeader.HEADER_SIZE).toByteArray()
-                    _incomingAudioPackets.emit(ReceivedAudioPacket(header, payload, clientId))
-                    
-                    // If host, broadcast to other clients
-                    if (isHosting) {
-                        clientSockets.values.forEach { handler ->
-                            if (handler.clientId != clientId) {
-                                handler.sendFrame(FRAME_TYPE_AUDIO, framePayload)
-                            }
-                        }
-                    }
+                    // Legacy fallback only — audio normally arrives via UDP.
+                    // tryEmit: a stalled collector must never block the socket read loop.
+                    _incomingAudioPackets.tryEmit(ReceivedAudioPacket(header, payload, clientId))
                 }
             }
         } catch (e: Exception) {
@@ -650,6 +639,8 @@ class WifiSocketController(private val context: Context) {
                 socket.close()
                 if (isHost) {
                     clientSockets.remove(clientId)
+                    // Forget learned UDP addresses for this client (clientId is "ip:tcpPort")
+                    udpAudioPlane.removeClientsWithIp(clientId.substringBeforeLast(':'))
                     scope.launch {
                         _endpointDisconnected.emit(clientId)
                     }
@@ -735,6 +726,7 @@ class WifiSocketController(private val context: Context) {
             try {
                 if (isHosting) {
                     // Stop hosting: close all client connections
+                    udpAudioPlane.stop()
                     clientSockets.values.forEach { handler ->
                         handler.stop()
                     }
@@ -757,6 +749,7 @@ class WifiSocketController(private val context: Context) {
                     Log.d(TAG, "Stopped hosting")
                 } else {
                     // Disconnect from host
+                    udpAudioPlane.stop()
                     hostSocketHandler?.stop()
                     hostSocketHandler = null
                     clientSocket?.close()
