@@ -11,8 +11,8 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.Image
-import peersync.composeapp.generated.resources.Res
-import peersync.composeapp.generated.resources.logo
+import ridecomms.composeapp.generated.resources.Res
+import ridecomms.composeapp.generated.resources.logo
 import org.jetbrains.compose.resources.painterResource
 import com.peersync.app.model.ConnectionState
 import com.peersync.app.model.MediaAction

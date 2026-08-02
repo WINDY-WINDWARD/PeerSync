@@ -8,5 +8,5 @@ pluginManagement {
 }
 
 
-rootProject.name = "RideCommsS"
+rootProject.name = "RideCommS"
 include(":composeApp")

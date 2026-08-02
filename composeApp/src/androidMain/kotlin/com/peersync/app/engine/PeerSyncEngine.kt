@@ -100,6 +100,7 @@ class PeerSyncEngine private constructor(private val context: Context) {
     // Speed test tracking: timestamp -> payload size for calculating RTT
     private val pendingSpeedTests = ConcurrentHashMap<Long, Int>()
     private var speedTestJob: Job? = null
+    private var reconnectJob: Job? = null
 
     // Audio recovery: serializes stream restart operations to prevent coroutine conflicts
     private val audioRestartMutex = Mutex()
@@ -515,10 +516,14 @@ class PeerSyncEngine private constructor(private val context: Context) {
                         }
                         
                         // Start 5-minute fallback loop
-                        scope.launch {
+                        reconnectJob?.cancel()
+                        reconnectJob = scope.launch {
                             val fallbackStartTime = System.currentTimeMillis()
                             val fallbackTimeoutMs = 300000L  // 5 minutes
-                            val retryIntervalMs = 5000L       // 5 seconds
+                            
+                            // Issue connection request ONCE
+                            Log.d(TAG, "Initiating Wi-Fi network reconnect to host: $activeSessionName")
+                            wifiSocketController.connectToHost(activeSessionName, activePin)
                             
                             while (isActive && _connectionState.value == ConnectionState.Reconnecting) {
                                 val elapsedMs = System.currentTimeMillis() - fallbackStartTime
@@ -530,12 +535,8 @@ class PeerSyncEngine private constructor(private val context: Context) {
                                     break
                                 }
                                 
-                                // Try to reconnect to host
-                                Log.d(TAG, "Attempting to reconnect to host (${elapsedMs / 1000}s elapsed)...")
-                                wifiSocketController.connectToHost(activeSessionName, activePin)
-                                
-                                // Wait before next retry
-                                kotlinx.coroutines.delay(retryIntervalMs)
+                                // Wait before next check
+                                kotlinx.coroutines.delay(5000L)
                             }
                             
                             // If successfully reconnected before timeout
@@ -719,6 +720,8 @@ class PeerSyncEngine private constructor(private val context: Context) {
 
     fun createSession(sessionName: String, localDeviceName: String) {
         manualDisconnectRequested = false
+        reconnectJob?.cancel()
+        reconnectJob = null
         this.myDeviceName = localDeviceName
         val pin = PinManager.generatePin()
         this.currentPin = pin
@@ -734,6 +737,8 @@ class PeerSyncEngine private constructor(private val context: Context) {
 
     fun joinSession(session: DiscoveredSession, pin: String, localDeviceName: String) {
         manualDisconnectRequested = false
+        reconnectJob?.cancel()
+        reconnectJob = null
         this.myDeviceName = localDeviceName
         this.currentPin = pin
         this.activeSessionName = session.deviceAddress
@@ -840,6 +845,8 @@ class PeerSyncEngine private constructor(private val context: Context) {
 
     fun disconnect() {
         manualDisconnectRequested = true
+        reconnectJob?.cancel()
+        reconnectJob = null
         mediaHostManager.stopPlayback(clearPlaylist = true)
         audioBridge.stop()
         wifiSocketController.disconnect()

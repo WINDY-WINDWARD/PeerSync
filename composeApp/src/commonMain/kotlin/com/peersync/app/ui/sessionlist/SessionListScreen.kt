@@ -33,7 +33,7 @@ fun SessionListScreen(
 ) {
     var showCreateDialog by remember { mutableStateOf(false) }
     var selectedSession by remember { mutableStateOf<DiscoveredSession?>(null) }
-    var newSessionName by remember { mutableStateOf("PeerSync Intercom") }
+    var newSessionName by remember { mutableStateOf("RideCommS") }
     var pinInput by remember { mutableStateOf("") }
 
     Scaffold(
@@ -41,7 +41,12 @@ fun SessionListScreen(
         contentColor = MaterialTheme.colorScheme.onBackground,
         topBar = {
             TopAppBar(
-                title = { Text("PeerSync Intercom", fontWeight = FontWeight.Bold) },
+                title = { 
+                    Column {
+                        Text("RideCommS", fontWeight = FontWeight.Bold)
+                        Text("Intercom and Music Sharing", style = MaterialTheme.typography.bodySmall)
+                    }
+                },
                 actions = {
                     IconButton(onClick = onOpenSettings) {
                         Icon(imageVector = Icons.Default.Settings, contentDescription = "Settings")

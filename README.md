@@ -39,3 +39,7 @@ This keeps the version code under Android's 2.1 billion limit while maintaining 
 1. **No git automation**: Version bumps are not triggered by git hooks or branch events — only by successful Gradle builds
 2. **Commit frequently**: Always commit `version.properties` to git alongside version changes so the counter is synchronized across all team members and branches
 3. **Verify in Settings**: After a build, open the app and navigate to **Settings → About** to confirm the current version
+
+## Documentation & Troubleshooting
+
+For common troubleshooting, Wi-Fi Direct zombie network handling, and connection FAQs, see [FAQ & Troubleshooting Guide](docs/FAQ.md).

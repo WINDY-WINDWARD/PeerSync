@@ -125,7 +125,7 @@ class PeerSyncService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "PeerSync Intercom Service",
+                "RideCommS Service",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "Keeps Wi-Fi Direct intercom active in background"
@@ -137,7 +137,7 @@ class PeerSyncService : Service() {
 
     private fun buildNotification(): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("PeerSync Intercom Active")
+            .setContentTitle("RideCommS Active")
             .setContentText("Connected to low-latency local mesh session.")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setPriority(NotificationCompat.PRIORITY_LOW)

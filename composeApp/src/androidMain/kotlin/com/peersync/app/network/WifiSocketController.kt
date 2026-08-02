@@ -219,7 +219,9 @@ class WifiSocketController(private val context: Context) {
         if (wifiP2pManager != null) {
             scope.launch {
                 try {
-                    p2pChannel = wifiP2pManager!!.initialize(context, Looper.getMainLooper(), null)
+                    if (p2pChannel == null) {
+                        p2pChannel = wifiP2pManager!!.initialize(context, Looper.getMainLooper(), null)
+                    }
                     
                     val config = WifiP2pConfig.Builder()
                         .setNetworkName(ssid)
@@ -297,21 +299,26 @@ class WifiSocketController(private val context: Context) {
         }
     }
     
+     private fun unregisterNetworkCallbackInternal() {
+         if (isNetworkCallbackRegistered) {
+             try {
+                 connectivityManager.unregisterNetworkCallback(networkCallback)
+                 Log.d(TAG, "Unregistered network callback")
+             } catch (e: Exception) {
+                 Log.w(TAG, "Error unregistering network callback: ${e.message}")
+             } finally {
+                 isNetworkCallbackRegistered = false
+             }
+         }
+     }
+
      /**
       * Internal: Request network connection using WifiNetworkSpecifier.
       */
      private fun requestNetworkConnection(ssid: String, pin: String) {
          try {
              // Unregister callback if already registered to prevent duplicate registration
-             if (isNetworkCallbackRegistered) {
-                 try {
-                     connectivityManager.unregisterNetworkCallback(networkCallback)
-                     Log.d(TAG, "Unregistered previous network callback")
-                 } catch (e: Exception) {
-                     Log.w(TAG, "Error unregistering previous callback: ${e.message}")
-                 }
-                 isNetworkCallbackRegistered = false
-             }
+             unregisterNetworkCallbackInternal()
              
              val specifier = android.net.wifi.WifiNetworkSpecifier.Builder()
                  .setSsid(ssid)
@@ -373,17 +380,66 @@ class WifiSocketController(private val context: Context) {
                 clientSocket = null
                 hostSocketHandler?.stop()
                 hostSocketHandler = null
-                if (isNetworkCallbackRegistered) {
-                    connectivityManager.unregisterNetworkCallback(networkCallback)
-                    isNetworkCallbackRegistered = false
-                    Log.d(TAG, "Unregistered network callback")
-                }
+                unregisterNetworkCallbackInternal()
                 _wifiSocketState.value = WifiSocketState.Idle
                 _endpointDisconnected.emit("host")
                 Log.d(TAG, "Disconnected from host")
             } catch (e: Exception) {
                 Log.e(TAG, "Error disconnecting: ${e.message}")
             }
+        }
+    }
+
+    /**
+     * Helper to reliably tear down Wi-Fi P2P group with retries.
+     */
+    private fun tearDownP2pGroup() {
+        val manager = wifiP2pManager ?: return
+        val channel = p2pChannel ?: return
+        
+        try {
+            manager.stopPeerDiscovery(channel, null)
+        } catch (e: Exception) {
+            Log.w(TAG, "Error stopping peer discovery: ${e.message}")
+        }
+
+        fun attemptRemove(attempt: Int) {
+            manager.removeGroup(channel, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    Log.d(TAG, "Wi-Fi P2P group successfully removed (attempt $attempt)")
+                }
+
+                override fun onFailure(reason: Int) {
+                    Log.w(TAG, "Failed to remove P2P group (attempt $attempt, reason=$reason)")
+                    if (attempt < 3) {
+                        scope.launch {
+                            delay(400)
+                            attemptRemove(attempt + 1)
+                        }
+                    }
+                }
+            })
+        }
+
+        attemptRemove(1)
+        clearPersistentGroups()
+    }
+
+    private fun clearPersistentGroups() {
+        val manager = wifiP2pManager ?: return
+        val channel = p2pChannel ?: return
+        try {
+            val methods = manager.javaClass.methods
+            for (method in methods) {
+                if (method.name == "deletePersistentGroup") {
+                    for (netId in 0..32) {
+                        method.invoke(manager, channel, netId, null)
+                    }
+                }
+            }
+            Log.d(TAG, "Cleared persistent P2P groups")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to clear persistent groups: ${e.message}")
         }
     }
 
@@ -398,6 +454,7 @@ class WifiSocketController(private val context: Context) {
             serverSocket = null
             clientSockets.values.forEach { it.stop() }
             clientSockets.clear()
+            tearDownP2pGroup()
             _wifiSocketState.value = WifiSocketState.Idle
             Log.d(TAG, "Hosting stopped")
         } catch (e: Exception) {
@@ -476,11 +533,21 @@ class WifiSocketController(private val context: Context) {
         try {
             val scanResults = wifiManager.scanResults ?: return
             val sessions = mutableListOf<DiscoveredSession>()
+            val nowNanos = android.os.SystemClock.elapsedRealtimeNanos()
+            val maxAgeNanos = 15_000_000_000L // 15 seconds max age for valid AP beacons
             
             for (result in scanResults) {
                 // Filter for DIRECT-PS-* SSIDs
                 val ssid = result.SSID
                 if (!ssid.isNullOrEmpty() && ssid.startsWith(WIFI_DIRECT_SSID_PREFIX)) {
+                    // Ignore stale scan results cached in Android OS
+                    val timestampNanos = result.timestamp * 1000L
+                    val ageNanos = nowNanos - timestampNanos
+                    if (result.timestamp > 0 && ageNanos > maxAgeNanos) {
+                        Log.d(TAG, "Ignoring stale scan result for $ssid (age: ${ageNanos / 1_000_000_000L}s)")
+                        continue
+                    }
+                    
                     // Extract session name by removing DIRECT-PS- prefix
                     val sessionName = ssid.removePrefix(WIFI_DIRECT_SSID_PREFIX)
                     
@@ -737,12 +804,7 @@ class WifiSocketController(private val context: Context) {
                     serverSocket = null
                     
                     // Tear down Wi-Fi P2P group
-                    p2pChannel?.let { channel ->
-                        wifiP2pManager?.removeGroup(channel, object : WifiP2pManager.ActionListener {
-                            override fun onSuccess() { Log.d(TAG, "Wi-Fi P2P group successfully removed") }
-                            override fun onFailure(reason: Int) { Log.e(TAG, "Failed to remove P2P group: $reason") }
-                        })
-                    }
+                    tearDownP2pGroup()
                     
                     isHosting = false
                     _wifiSocketState.value = WifiSocketState.Idle
@@ -754,22 +816,13 @@ class WifiSocketController(private val context: Context) {
                     hostSocketHandler = null
                     clientSocket?.close()
                     clientSocket = null
-                     
-                     // Cancel Wi-Fi network request
-                     if (isNetworkCallbackRegistered) {
-                         try {
-                             val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-                             connectivityManager.unregisterNetworkCallback(networkCallback)
-                             isNetworkCallbackRegistered = false
-                             Log.d(TAG, "Unregistered network callback")
-                         } catch (e: Exception) {
-                             Log.w(TAG, "Error unregistering network callback: ${e.message}")
-                         }
-                     }
-                     
-                     boundNetwork = null
-                     _wifiSocketState.value = WifiSocketState.Idle
-                     Log.d(TAG, "Disconnected from host")
+                    
+                    // Cancel Wi-Fi network request
+                    unregisterNetworkCallbackInternal()
+                    
+                    boundNetwork = null
+                    _wifiSocketState.value = WifiSocketState.Idle
+                    Log.d(TAG, "Disconnected from host")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error during disconnect: ${e.message}")
