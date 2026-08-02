@@ -8,5 +8,5 @@ pluginManagement {
 }
 
 
-rootProject.name = "PeerSync"
+rootProject.name = "RideCommsS"
 include(":composeApp")
