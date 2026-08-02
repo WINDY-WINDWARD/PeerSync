@@ -16,6 +16,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.platform.LocalUriHandler
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
@@ -32,6 +35,8 @@ fun SettingsScreen(
     onGrantBatteryOptimizationExemption: () -> Unit,
     onBackPressed: () -> Unit
 ) {
+    val uriHandler = LocalUriHandler.current
+
     Scaffold(
         containerColor = Color.Transparent,
         contentColor = MaterialTheme.colorScheme.onBackground,
@@ -135,7 +140,7 @@ fun SettingsScreen(
                             modifier = Modifier.padding(bottom = 8.dp)
                         )
                         Text(
-                            text = "PeerSync requires these permissions to function:\n\n" +
+                            text = "RideCommS requires these permissions to function:\n\n" +
                                     "• Location: To enable Wi-Fi Direct peer discovery\n" +
                                     "• Microphone: To capture and transmit audio\n" +
                                     "• Camera: For video features\n" +
@@ -168,16 +173,49 @@ fun SettingsScreen(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
-                            text = "PeerSync",
+                            text = "RideCommS",
                             fontSize = 18.sp,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
                             text = "Version $appVersion",
-                            fontSize = 14.sp,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.padding(top = 4.dp)
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                            modifier = Modifier.padding(top = 2.dp)
                         )
+                        
+                        Spacer(modifier = Modifier.height(12.dp))
+                        HorizontalDivider(
+                            modifier = Modifier.padding(horizontal = 32.dp),
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = "Developed by ",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                            )
+                            Surface(
+                                onClick = {
+                                    uriHandler.openUri("https://github.com/WINDY-WINDWARD")
+                                },
+                                shape = RoundedCornerShape(6.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
+                            ) {
+                                Text(
+                                    text = "WINDY-WINDWARD",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
                     }
                 }
             }
